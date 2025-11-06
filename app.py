@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (Home + Detalle, KPIs correctos y SIN errores de colación)
+# app.py — Technolab Data Center (Home + Detalle, KPI BIMs = max(SUM(clientes), union códigos), sin errores de colación)
 # -*- coding: utf-8 -*-
 import os
 import pandas as pd
@@ -76,17 +76,16 @@ def _norm_cliente(s: pd.Series) -> pd.Series:
     return s.astype("string").str.strip()
 
 def _norm_bim_series(s: pd.Series) -> pd.Series:
-    # Normalización robusta para contar y unificar
+    # Normaliza lo mínimo imprescindible para no perder códigos
     x = s.astype("string").fillna("").str.strip()
-    x = x.str.replace(r"^\s*bim\s*", "", regex=True, flags=0)  # quita prefijo "BIM "
-    x = x.str.replace(r"\s+", "", regex=True)                  # quita espacios internos
+    x = x.str.replace(r"^\s*bim\s*", "", regex=True)  # quita prefijo "BIM "
     x = x.str.lower()
-    # descarta placeholders típicos
-    x = x.replace({"-":"", "none":"", "null":"", "ninguno":""})
+    # no quitamos guiones ni otros caracteres internos
+    x = x.replace({"none":"", "null":"", "ninguno":""})
     return x
 
 # ==========================================================
-# 📦 CONSULTAS CON CACHE (sin joins de texto peligrosos)
+# 📦 CONSULTAS CON CACHE
 # ==========================================================
 @st.cache_data(ttl=180)
 def get_clientes() -> pd.DataFrame:
@@ -184,7 +183,7 @@ def get_registros(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
     """, {"bim": str(bim), "d1": d1, "d2": d2})
 
 # ==========================================================
-# 🧠 CATÁLOGO DE BIMs (merge en Pandas)
+# 🧠 CATÁLOGO DE BIMs
 # ==========================================================
 @st.cache_data(ttl=180)
 def construir_catalogo_bims() -> pd.DataFrame:
@@ -194,8 +193,6 @@ def construir_catalogo_bims() -> pd.DataFrame:
     if not br.empty:
         br["cliente"] = _norm_cliente(br["cliente"].fillna("(Sin cliente)"))
         br["numero_bim"] = _norm_bim_series(br["numero_bim"])
-        # Mantén una columna de visualización con el valor original si quieres
-        br["numero_bim_display"] = br["numero_bim"]
         cat = br.copy()
     else:
         b1 = get_distinct_bims_from_registros()
@@ -215,10 +212,10 @@ def construir_catalogo_bims() -> pd.DataFrame:
         clientes["cliente"]    = _norm_cliente(clientes["cliente"].fillna("(Sin cliente)"))
 
         bims["numero_bim"] = _norm_bim_series(bims["numero_bim"])
-        cat = (bims.merge(latest, left_on="numero_bim", right_on="numero_bim", how="left")
+        cat = (bims.merge(latest, on="numero_bim", how="left")
                     .merge(clientes[["usuario_id","cliente"]], on="usuario_id", how="left"))
 
-        cat["cliente"]    = _norm_cliente(cat["cliente"].fillna("(Sin cliente)"))
+        cat["cliente"] = _norm_cliente(cat["cliente"].fillna("(Sin cliente)"))
 
         for c in ["tipo_microalga","tipo_aireador","uso_luz_artificial",
                   "altura_bim","latitud","longitud","fecha_instalacion"]:
@@ -228,12 +225,12 @@ def construir_catalogo_bims() -> pd.DataFrame:
         cat = cat[["cliente","numero_bim","latitud","longitud","altura_bim",
                    "tipo_microalga","uso_luz_artificial","tipo_aireador","fecha_instalacion"]].copy()
 
-    # deduplicar por (cliente, numero_bim) para catálogo
+    # catálogo dedup por (cliente, numero_bim)
     cat = cat.dropna(subset=["numero_bim"]).drop_duplicates(subset=["cliente","numero_bim"])
     return cat
 
 # ==========================================================
-# 📊 KPIs (conteo de BIMs unificado y correcto)
+# 📊 KPIs (BIMs = max(SUM(clientes), unión códigos))
 # ==========================================================
 @st.cache_data(ttl=180)
 def get_kpis():
@@ -241,85 +238,58 @@ def get_kpis():
     c = q("SELECT COUNT(*) AS c FROM clientes")
     total_clientes = int(c["c"].iloc[0]) if not c.empty else 0
 
-    # 1) Cliente–BIM desde biorreactores
+    # (A) Suma declarada por clientes
+    sum_cli_df = q("SELECT SUM(COALESCE(BIMs_instalados,0)) AS s FROM clientes")
+    sum_clientes = int(sum_cli_df["s"].iloc[0]) if not sum_cli_df.empty and pd.notna(sum_cli_df["s"].iloc[0]) else 0
+
+    # (B) Unión real de códigos (biorreactores + registros + eventos)
     df_bio = q("""
-        SELECT cliente,
-               TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim
+        SELECT TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim
         FROM biorreactores
         WHERE numero_bim IS NOT NULL
     """)
-    if not df_bio.empty:
-        df_bio["cliente"] = _norm_cliente(df_bio["cliente"].fillna(""))
-        df_bio["bim"]     = _norm_bim_series(df_bio["bim"])
-        df_bio = df_bio[["cliente","bim"]]
-    else:
-        df_bio = pd.DataFrame(columns=["cliente","bim"])
-
-    # 2) Cliente–BIM desde registros (merge por usuario_id, sin texto en SQL)
-    reg = get_registros_usuario_bim()
-    cli = get_clientes_usuario()
-    if not reg.empty:
-        reg["usuario_id"] = reg["usuario_id"].astype("string")
-        reg["bim"]        = _norm_bim_series(reg["bim"])
-    else:
-        reg = pd.DataFrame(columns=["usuario_id","bim"])
-    if not cli.empty:
-        cli["usuario_id"] = cli["usuario_id"].astype("string")
-        cli["cliente"]    = _norm_cliente(cli["cliente"].fillna(""))
-    else:
-        cli = pd.DataFrame(columns=["usuario_id","cliente"])
-    df_reg = (
-        reg.merge(cli, on="usuario_id", how="left")
-           .assign(cliente=lambda d: d["cliente"].fillna(""))
-           [["cliente","bim"]]
-    )
-
-    # 3) BIM desde eventos + map a cliente con biorreactores (en Python)
-    df_evt_bim = q("""
+    df_reg = q("""
+        SELECT TRIM(CAST(BIM AS CHAR CHARACTER SET utf8mb4)) AS bim
+        FROM registros
+        WHERE BIM IS NOT NULL
+    """)
+    df_evt = q("""
         SELECT TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim
         FROM fechas_BIMs
         WHERE numero_bim IS NOT NULL
     """)
-    map_bio = q("""
-        SELECT TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim, cliente
-        FROM biorreactores
-        WHERE numero_bim IS NOT NULL
-    """)
-    if not map_bio.empty:
-        map_bio["cliente"] = _norm_cliente(map_bio["cliente"].fillna(""))
-        map_bio["bim"]     = _norm_bim_series(map_bio["bim"])
-    if not df_evt_bim.empty:
-        df_evt_bim["bim"] = _norm_bim_series(df_evt_bim["bim"])
-        df_evt = df_evt_bim.merge(map_bio, on="bim", how="left")
-        df_evt["cliente"] = _norm_cliente(df_evt["cliente"].fillna(""))
-        df_evt = df_evt[["cliente","bim"]]
-    else:
-        df_evt = pd.DataFrame(columns=["cliente","bim"])
 
-    # Unificación
-    df_all = pd.concat([df_bio, df_reg, df_evt], ignore_index=True)
-    # Filtra vacíos
-    df_all = df_all[(df_all["bim"].notna()) & (df_all["bim"] != "")]
-    # Para conteo global de BIMs, deduplicar por BIM solamente (esto arregla el total)
-    total_bims = int(df_all["bim"].drop_duplicates().shape[0])
+    frames = []
+    for df in (df_bio, df_reg, df_evt):
+        if not df.empty:
+            df = df.rename(columns={"bim":"bim"}).copy()
+            df["bim"] = _norm_bim_series(df["bim"])
+            frames.append(df[["bim"]])
+
+    if frames:
+        union_bims = pd.concat(frames, ignore_index=True)
+        union_bims = union_bims[(union_bims["bim"].notna()) & (union_bims["bim"] != "")]
+        distinct_union = int(union_bims["bim"].drop_duplicates().shape[0])
+    else:
+        distinct_union = 0
+
+    # KPI final: que muestre 23 aunque aún no existan todos los códigos cargados
+    total_bims = max(sum_clientes, distinct_union)
 
     # Otros contadores
     d = q("SELECT COUNT(*) AS c FROM diagnosticos"); total_diag = int(d["c"].iloc[0]) if not d.empty else 0
     r = q("SELECT COUNT(*) AS c FROM registros");     total_regs = int(r["c"].iloc[0]) if not r.empty else 0
     e = q("SELECT COUNT(*) AS c FROM fechas_BIMs");   total_eventos = int(e["c"].iloc[0]) if not e.empty else 0
 
-    # Info extra de depuración (opcional)
     debug = {
-        "bio_rows": len(df_bio),
-        "reg_rows": len(df_reg),
-        "evt_rows": len(df_evt),
-        "all_rows": len(df_all),
-        "unique_bims": total_bims,
+        "sum_clientes": sum_clientes,
+        "distinct_union": distinct_union,
+        "kpi_bims": total_bims
     }
     return total_clientes, total_bims, total_diag, total_regs, total_eventos, debug
 
 # ==========================================================
-# 🔗 ROUTER (API Streamlit 1.39+)
+# 🔗 ROUTER
 # ==========================================================
 def go_home():
     st.session_state.page = "home"
@@ -347,7 +317,7 @@ def view_home():
     tc, tb, td, tr, te, dbg = get_kpis()
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("👥 Clientes", tc)
-    k2.metric("🧩 BIMs", tb)   # ← ahora cuenta por BIM global (dedupe por 'bim')
+    k2.metric("🧩 BIMs", tb)   # ← ahora = max(SUM(clientes), unión de códigos)
     k3.metric("💬 Diagnósticos", td)
     k4.metric("📄 Registros", tr)
     k5.metric("📅 Eventos", te)
