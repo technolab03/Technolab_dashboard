@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (Home + Detalle, KPIs correctos y catálogo robusto)
+# app.py — Technolab Data Center (Home + Detalle, KPIs correctos y SIN errores de colación)
 # -*- coding: utf-8 -*-
 import os
 import pandas as pd
@@ -27,7 +27,7 @@ a.btn-link:hover { background:#1e293b; }
 """, unsafe_allow_html=True)
 
 # ==========================================================
-# 🔗 CONEXIÓN DIRECTA MYSQL (con sesión en utf8mb4_unicode_ci)
+# 🔗 CONEXIÓN MYSQL (sesión forzada a utf8mb4_unicode_ci)
 # ==========================================================
 def build_engine():
     if "mysql" in st.secrets:
@@ -63,7 +63,7 @@ def build_engine():
 ENGINE = build_engine()
 
 # ==========================================================
-# 🔍 HELPERS SQL
+# 🔍 HELPERS
 # ==========================================================
 def q(sql: str, params: dict | None = None) -> pd.DataFrame:
     try:
@@ -144,7 +144,7 @@ def get_registros(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
     """, {"bim": str(bim), "d1": d1, "d2": d2})
 
 # ==========================================================
-# 🧠 CATÁLOGO DE BIMs
+# 🧠 CATÁLOGO DE BIMs (fallback si no hay biorreactores)
 # ==========================================================
 @st.cache_data(ttl=180)
 def construir_catalogo_bims() -> pd.DataFrame:
@@ -180,7 +180,7 @@ def construir_catalogo_bims() -> pd.DataFrame:
     return cat
 
 # ==========================================================
-# 📊 KPIs (sin UNION en SQL → sin colation mix)
+# 📊 KPIs (cálculo en Pandas para evitar UNION/collation mix)
 # ==========================================================
 @st.cache_data(ttl=180)
 def get_kpis():
@@ -188,38 +188,41 @@ def get_kpis():
     c = q("SELECT COUNT(*) AS c FROM clientes")
     total_clientes = int(c["c"].iloc[0]) if not c.empty else 0
 
-    # 1) Cliente–BIM desde biorreactores (no hay joins de texto)
+    # 1) Cliente–BIM desde biorreactores
     df_bio = q("""
-        SELECT TRIM(COALESCE(cliente,'')) AS cliente,
-               TRIM(CAST(numero_bim AS CHAR)) AS bim
+        SELECT
+          TRIM(CONVERT(cliente USING utf8mb4)) AS cliente,
+          TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim
         FROM biorreactores
         WHERE numero_bim IS NOT NULL
     """)
 
-    # 2) Cliente–BIM desde registros (join por usuario_id, no por cadenas)
+    # 2) Cliente–BIM desde registros, ENDURO a colación (sin COALESCE, usando CONVERT/CAST)
     df_reg = q("""
-        SELECT TRIM(COALESCE(c.cliente,'')) AS cliente,
-               TRIM(CAST(r.BIM AS CHAR))    AS bim
+        SELECT
+          TRIM(CONVERT(c.cliente USING utf8mb4)) AS cliente,
+          TRIM(CAST(r.BIM AS CHAR CHARACTER SET utf8mb4)) AS bim
         FROM registros r
         LEFT JOIN clientes c ON c.usuario_id = r.usuario_id
         WHERE r.BIM IS NOT NULL
     """)
 
-    # 3) BIM desde fechas_BIMs, mapeando cliente por biorreactores en Python
+    # 3) BIM desde eventos + map a cliente con biorreactores en Python (evita joins de texto en MySQL)
     df_evt_bim = q("""
-        SELECT TRIM(CAST(numero_bim AS CHAR)) AS bim
+        SELECT TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim
         FROM fechas_BIMs
         WHERE numero_bim IS NOT NULL
     """)
     map_bio = q("""
-        SELECT TRIM(CAST(numero_bim AS CHAR)) AS bim,
-               TRIM(COALESCE(cliente,''))     AS cliente
+        SELECT
+          TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim,
+          TRIM(CONVERT(cliente USING utf8mb4)) AS cliente
         FROM biorreactores
         WHERE numero_bim IS NOT NULL
     """)
     df_evt = df_evt_bim.merge(map_bio, on="bim", how="left")
 
-    # Normalización en Pandas (evita comparaciones de colación en MySQL)
+    # Normalización en Pandas
     def _clean(df):
         if df.empty:
             return pd.DataFrame(columns=["cliente","bim"])
@@ -239,7 +242,7 @@ def get_kpis():
     return total_clientes, total_bims, total_diag, total_regs, total_eventos
 
 # ==========================================================
-# 🔗 ROUTER (Home / Detalle) con query params (API 1.39+)
+# 🔗 ROUTER (API Streamlit 1.39+)
 # ==========================================================
 def go_home():
     st.session_state.page = "home"
@@ -283,10 +286,7 @@ def view_home():
     clientes_opts = ["Todos"] + sorted(catalogo["cliente"].dropna().unique().tolist())
     cliente_sel = st.sidebar.selectbox("👤 Cliente", clientes_opts)
 
-    if cliente_sel != "Todos":
-        cat_f = catalogo[catalogo["cliente"] == cliente_sel].copy()
-    else:
-        cat_f = catalogo.copy()
+    cat_f = catalogo if cliente_sel == "Todos" else catalogo[catalogo["cliente"] == cliente_sel].copy()
 
     st.subheader("🧫 Selección de BIMs")
     for cliente, grp in cat_f.groupby("cliente"):
