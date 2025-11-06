@@ -1,7 +1,9 @@
 # app.py — Technolab Data Center (Home + Detalle, KPIs correctos y catálogo robusto)
+# -*- coding: utf-8 -*-
+import os
 import pandas as pd
 import streamlit as st
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, event
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Technolab Data Center", page_icon="🧪", layout="wide")
@@ -25,12 +27,42 @@ a.btn-link:hover { background:#1e293b; }
 """, unsafe_allow_html=True)
 
 # ==========================================================
-# 🔗 CONEXIÓN DIRECTA MYSQL (DigitalOcean)
+# 🔗 CONEXIÓN DIRECTA MYSQL
+#    (usa st.secrets si existe; si no, variables de entorno; último recurso: literal)
 # ==========================================================
-ENGINE = create_engine(
-    "mysql+pymysql://makeuser:NUEVA_PASSWORD_SEGURA@143.198.144.39:3306/technolab?charset=utf8mb4",
-    pool_pre_ping=True, pool_recycle=1800
-)
+def build_engine():
+    if "mysql" in st.secrets:
+        user     = st.secrets["mysql"]["user"]
+        password = st.secrets["mysql"]["password"]
+        host     = st.secrets["mysql"]["host"]
+        port     = st.secrets["mysql"].get("port", 3306)
+        database = st.secrets["mysql"]["database"]
+    else:
+        user     = os.getenv("MYSQL_USER", "makeuser")
+        password = os.getenv("MYSQL_PASSWORD", "NUEVA_PASSWORD_SEGURA")
+        host     = os.getenv("MYSQL_HOST", "143.198.144.39")
+        port     = int(os.getenv("MYSQL_PORT", "3306"))
+        database = os.getenv("MYSQL_DATABASE", "technolab")
+
+    url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
+    engine = create_engine(
+        url,
+        pool_pre_ping=True,
+        pool_recycle=1800,
+        connect_args={"charset": "utf8mb4"},
+    )
+
+    # Forzar collation a nivel de sesión para evitar "Illegal mix of collations"
+    @event.listens_for(engine, "connect")
+    def _set_session_collation(dbapi_conn, _):
+        cur = dbapi_conn.cursor()
+        cur.execute("SET NAMES utf8mb4;")
+        cur.execute("SET collation_connection = 'utf8mb4_unicode_ci';")
+        cur.close()
+
+    return engine
+
+ENGINE = build_engine()
 
 # ==========================================================
 # 🔍 HELPERS SQL
@@ -43,22 +75,10 @@ def q(sql: str, params: dict | None = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 def _norm_cliente(s: pd.Series) -> pd.Series:
-    return s.astype(str).str.strip()
+    return s.astype("string").str.strip()
 
 def _norm_bim(s: pd.Series) -> pd.Series:
-    return s.astype(str).str.strip()
-
-def _to_int_if_possible(x):
-    try:
-        sx = str(x).strip()
-        if sx.startswith(("+","-")):
-            return int(sx)  # maneja signos
-        # si es solo dígitos (permitimos ceros a la izquierda)
-        if sx.isdigit():
-            return int(sx)
-        return x
-    except Exception:
-        return x
+    return s.astype("string").str.strip()
 
 # ==========================================================
 # 📦 CONSULTAS CON CACHE
@@ -98,32 +118,32 @@ def get_latest_usuario_por_bim() -> pd.DataFrame:
     """)
 
 @st.cache_data(ttl=180)
-def get_eventos(bim, d1: datetime, d2: datetime) -> pd.DataFrame:
+def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
     return q("""
         SELECT id, numero_bim, nombre_evento, fecha, comentarios
         FROM fechas_BIMs
         WHERE numero_bim = :bim AND fecha BETWEEN :d1 AND :d2
         ORDER BY fecha DESC
-    """, {"bim": bim, "d1": d1, "d2": d2})
+    """, {"bim": str(bim), "d1": d1, "d2": d2})
 
 @st.cache_data(ttl=180)
-def get_diagnosticos(bim, d1: datetime, d2: datetime) -> pd.DataFrame:
+def get_diagnosticos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
     return q("""
         SELECT d.id, d.usuario_id, d.PreguntaCliente, d.respuestaGPT, d.fecha
         FROM diagnosticos d
         WHERE d.usuario_id IN (SELECT r.usuario_id FROM registros r WHERE r.BIM = :bim)
           AND d.fecha BETWEEN :d1 AND :d2
         ORDER BY d.fecha DESC
-    """, {"bim": bim, "d1": d1, "d2": d2})
+    """, {"bim": str(bim), "d1": d1, "d2": d2})
 
 @st.cache_data(ttl=180)
-def get_registros(bim, d1: datetime, d2: datetime) -> pd.DataFrame:
+def get_registros(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
     return q("""
         SELECT id, usuario_id, BIM, respuestaGPT, HEX, fecha
         FROM registros
         WHERE BIM = :bim AND fecha BETWEEN :d1 AND :d2
         ORDER BY fecha DESC
-    """, {"bim": bim, "d1": d1, "d2": d2})
+    """, {"bim": str(bim), "d1": d1, "d2": d2})
 
 # ==========================================================
 # 🧠 CATÁLOGO DE BIMs ROBUSTO (si no hay biorreactores usa registros/eventos)
@@ -140,7 +160,7 @@ def construir_catalogo_bims() -> pd.DataFrame:
     else:
         b1 = get_distinct_bims_from_registros()
         b2 = get_distinct_bims_from_eventos()
-        bims = pd.concat([b1, b2], ignore_index=True).drop_duplicates()
+        bims = pd.concat([b1, b2], ignore_index=True).dropna().drop_duplicates()
         if bims.empty:
             return pd.DataFrame(columns=[
                 "cliente","numero_bim","latitud","longitud","altura_bim",
@@ -164,37 +184,42 @@ def construir_catalogo_bims() -> pd.DataFrame:
     return cat
 
 # ==========================================================
-# 📊 KPIs CORRECTOS (par cliente,bim)
+# 📊 KPIs CORRECTOS (par cliente,bim) — SIN MEZCLA DE COLACIONES
 # ==========================================================
 @st.cache_data(ttl=180)
 def get_kpis():
     c = q("SELECT COUNT(*) AS c FROM clientes")
     total_clientes = int(c["c"].iloc[0]) if not c.empty else 0
 
-    # Distinct (cliente, numero_bim) a partir de todas las fuentes, normalizando
+    # Distinct (cliente, bim) con colación uniforme y sin comparar con '' literal
     kpi_bims = q("""
         SELECT COUNT(*) AS c FROM (
-            SELECT DISTINCT TRIM(COALESCE(b.cliente,''))      AS cliente,
-                            TRIM(CAST(b.numero_bim AS CHAR))  AS bim
+            SELECT DISTINCT
+                TRIM(COALESCE(b.cliente, '')) COLLATE utf8mb4_unicode_ci      AS cliente,
+                TRIM(CAST(b.numero_bim AS CHAR)) COLLATE utf8mb4_unicode_ci   AS bim
             FROM biorreactores b
             WHERE b.numero_bim IS NOT NULL
 
             UNION
-            SELECT DISTINCT TRIM(COALESCE(c.cliente,''))      AS cliente,
-                            TRIM(CAST(r.BIM AS CHAR))         AS bim
+            SELECT DISTINCT
+                TRIM(COALESCE(c.cliente, '')) COLLATE utf8mb4_unicode_ci      AS cliente,
+                TRIM(CAST(r.BIM AS CHAR)) COLLATE utf8mb4_unicode_ci          AS bim
             FROM registros r
             LEFT JOIN clientes c ON c.usuario_id = r.usuario_id
             WHERE r.BIM IS NOT NULL
 
             UNION
-            SELECT DISTINCT TRIM(COALESCE(c2.cliente,''))     AS cliente,
-                            TRIM(CAST(f.numero_bim AS CHAR))  AS bim
+            SELECT DISTINCT
+                TRIM(COALESCE(c2.cliente, '')) COLLATE utf8mb4_unicode_ci     AS cliente,
+                TRIM(CAST(f.numero_bim AS CHAR)) COLLATE utf8mb4_unicode_ci   AS bim
             FROM fechas_BIMs f
             LEFT JOIN biorreactores b2 ON b2.numero_bim = f.numero_bim
-            LEFT JOIN clientes c2 ON c2.cliente = b2.cliente
+            LEFT JOIN clientes c2
+                ON c2.cliente COLLATE utf8mb4_unicode_ci
+                 = b2.cliente COLLATE utf8mb4_unicode_ci
             WHERE f.numero_bim IS NOT NULL
         ) t
-        WHERE t.bim <> ''
+        WHERE t.bim IS NOT NULL AND CHAR_LENGTH(t.bim) > 0
     """)
     total_bims = int(kpi_bims["c"].iloc[0]) if not kpi_bims.empty else 0
 
@@ -204,24 +229,25 @@ def get_kpis():
     return total_clientes, total_bims, total_diag, total_regs, total_eventos
 
 # ==========================================================
-# 🔗 ROUTER (Home / Detalle) con query params
+# 🔗 ROUTER (Home / Detalle) con query params (API 1.39+)
 # ==========================================================
 def go_home():
     st.session_state.page = "home"
     st.session_state.selected_bim = None
-    st.experimental_set_query_params(page="home")
+    st.query_params.clear()
+    st.query_params["page"] = "home"
 
 def go_detail(bim: str):
     st.session_state.page = "detail"
-    st.session_state.selected_bim = bim
-    st.experimental_set_query_params(page="detail", bim=bim)
+    st.session_state.selected_bim = str(bim)
+    st.query_params.clear()
+    st.query_params.update({"page": "detail", "bim": str(bim)})
 
-# init state desde URL
-qs = st.experimental_get_query_params()
+# init state desde URL (API nueva)
 if "page" not in st.session_state:
-    st.session_state.page = qs.get("page", ["home"])[0]
+    st.session_state.page = st.query_params.get("page", "home")
 if "selected_bim" not in st.session_state:
-    st.session_state.selected_bim = qs.get("bim", [None])[0]
+    st.session_state.selected_bim = st.query_params.get("bim", None)
 
 # ==========================================================
 # 🏠 HOME
@@ -249,7 +275,7 @@ def view_home():
     cliente_sel = st.sidebar.selectbox("👤 Cliente", clientes_opts)
 
     if cliente_sel != "Todos":
-        cat_f = catalogo[catalogo["cliente"] == _norm_cliente(pd.Series([cliente_sel])).iat[0]].copy()
+        cat_f = catalogo[catalogo["cliente"] == cliente_sel].copy()
     else:
         cat_f = catalogo.copy()
 
@@ -268,8 +294,9 @@ def view_home():
 # ==========================================================
 def view_detail():
     catalogo = construir_catalogo_bims()
-    bim = st.session_state.selected_bim
-    if not bim or bim not in catalogo["numero_bim"].values:
+    bim = str(st.session_state.selected_bim) if st.session_state.selected_bim is not None else None
+
+    if not bim or bim not in set(catalogo["numero_bim"].astype("string")):
         st.info("BIM no encontrado. Volviendo al inicio…")
         go_home()
         st.stop()
@@ -278,7 +305,7 @@ def view_detail():
     st.markdown('<a class="btn-link" href="?page=home" target="_self">⬅️ Volver</a>', unsafe_allow_html=True)
     st.title(f"🧬 BIM {bim}")
 
-    sel = catalogo[catalogo["numero_bim"] == bim].iloc[0]
+    sel = catalogo[catalogo["numero_bim"].astype("string") == bim].iloc[0]
 
     c1, c2 = st.columns(2)
     with c1:
@@ -303,13 +330,10 @@ def view_detail():
     D1 = datetime.combine(d1, datetime.min.time())
     D2 = datetime.combine(d2, datetime.max.time())
 
-    # Asegurar tipo para el parámetro de SQL
-    bim_param = _to_int_if_possible(bim)
-
     T1, T2, T3 = st.tabs(["📄 Registros", "💬 Diagnósticos", "📅 Eventos BIM"])
 
     with T1:
-        df_r = get_registros(bim_param, D1, D2)
+        df_r = get_registros(bim, D1, D2)
         st.metric("Total registros", len(df_r))
         if df_r.empty:
             st.info("Sin registros en este rango.")
@@ -319,7 +343,7 @@ def view_detail():
                                file_name=f"registros_BIM{bim}.csv")
 
     with T2:
-        df_d = get_diagnosticos(bim_param, D1, D2)
+        df_d = get_diagnosticos(bim, D1, D2)
         st.metric("Total diagnósticos", len(df_d))
         if df_d.empty:
             st.info("Sin diagnósticos en este rango.")
@@ -329,7 +353,7 @@ def view_detail():
                                file_name=f"diagnosticos_BIM{bim}.csv")
 
     with T3:
-        df_e = get_eventos(bim_param, D1, D2)
+        df_e = get_eventos(bim, D1, D2)
         st.metric("Total eventos", len(df_e))
         if df_e.empty:
             st.info("Sin eventos para este BIM.")
@@ -343,8 +367,7 @@ def view_detail():
 # ==========================================================
 # 🚦 ROUTING
 # ==========================================================
-qs = st.experimental_get_query_params()
-page = st.session_state.get("page", qs.get("page", ["home"])[0])
+page = st.session_state.get("page", st.query_params.get("page", "home"))
 if page == "detail":
     view_detail()
 else:
