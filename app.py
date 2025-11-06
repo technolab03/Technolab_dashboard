@@ -26,7 +26,7 @@ def load_data():
     diagnosticos = pd.read_sql("SELECT * FROM diagnosticos", engine)
     registros = pd.read_sql("SELECT * FROM registros", engine)
 
-    # 🔧 Convertir columnas 'fecha' en todas las tablas
+    # 🔧 Convertir columnas 'fecha' en todas las tablas si existen
     for df in [fechas_bims, diagnosticos, registros]:
         if "fecha" in df.columns:
             df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
@@ -61,7 +61,7 @@ else:
     start_date, end_date = datetime.today() - timedelta(days=30), datetime.today()
 
 # ======================================================
-# 🧮 APLICAR FILTROS (CON CONVERSIÓN SEGURA)
+# 🧮 APLICAR FILTROS CON VALIDACIÓN DE TIPOS
 # ======================================================
 biorreactores_f = biorreactores.copy()
 fechas_f = fechas_bims.copy()
@@ -86,19 +86,24 @@ if bim_sel != "Todos":
     if "BIM" in reg_f.columns:
         reg_f = reg_f[reg_f["BIM"].astype(str) == bim_sel]
 
-# 🧹 Forzar conversión y eliminar filas con fechas inválidas
+# 🧹 Limpieza de fechas
 for df in [fechas_f, diag_f, reg_f]:
     if "fecha" in df.columns:
         df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
-        df.dropna(subset=["fecha"], inplace=True)
+        df = df[df["fecha"].notna()]
+        # asegurar tipo datetime64
+        if not pd.api.types.is_datetime64_any_dtype(df["fecha"]):
+            df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
 
-# ✅ Filtrar por rango de fechas solo si existen valores válidos
-if "fecha" in fechas_f.columns and not fechas_f["fecha"].empty:
-    fechas_f = fechas_f[(fechas_f["fecha"] >= start_date) & (fechas_f["fecha"] < end_date)]
-if "fecha" in diag_f.columns and not diag_f["fecha"].empty:
-    diag_f = diag_f[(diag_f["fecha"] >= start_date) & (diag_f["fecha"] < end_date)]
-if "fecha" in reg_f.columns and not reg_f["fecha"].empty:
-    reg_f = reg_f[(reg_f["fecha"] >= start_date) & (reg_f["fecha"] < end_date)]
+# ✅ Filtrar por rango de fechas SOLO si la columna es datetime
+def filtrar_por_fecha(df):
+    if "fecha" in df.columns and pd.api.types.is_datetime64_any_dtype(df["fecha"]):
+        return df[(df["fecha"] >= start_date) & (df["fecha"] < end_date)]
+    return df
+
+fechas_f = filtrar_por_fecha(fechas_f)
+diag_f = filtrar_por_fecha(diag_f)
+reg_f = filtrar_por_fecha(reg_f)
 
 # ======================================================
 # 🧠 ENCABEZADO
