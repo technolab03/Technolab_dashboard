@@ -2,6 +2,5 @@ streamlit==1.39.0
 sqlalchemy==2.0.35
 pymysql==1.1.1
 pandas==2.2.3
-numpy==2.1.1
-pydeck==0.9.1        # mapas 3D en Streamlit
-plotly==5.24.1       # gráficos interactivos
+plotly==5.24.1
+pydeck==0.9.1
