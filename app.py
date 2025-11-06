@@ -193,4 +193,3 @@ with T3:
 
 st.divider()
 st.caption("© Technolab — Dashboard unificado BIMs / Make / WhatsApp.")
-
