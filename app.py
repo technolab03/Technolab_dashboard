@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (Home + Vista Detalle con botón Volver)
+# app.py — Technolab Data Center (Home + Detalle, KPIs correctos y catálogo robusto)
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
@@ -42,6 +42,27 @@ def q(sql: str, params: dict | None = None) -> pd.DataFrame:
         st.error(f"Error SQL: {e}")
         return pd.DataFrame()
 
+def _norm_cliente(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.strip()
+
+def _norm_bim(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.strip()
+
+def _to_int_if_possible(x):
+    try:
+        sx = str(x).strip()
+        if sx.startswith(("+","-")):
+            return int(sx)  # maneja signos
+        # si es solo dígitos (permitimos ceros a la izquierda)
+        if sx.isdigit():
+            return int(sx)
+        return x
+    except Exception:
+        return x
+
+# ==========================================================
+# 📦 CONSULTAS CON CACHE
+# ==========================================================
 @st.cache_data(ttl=180)
 def get_clientes() -> pd.DataFrame:
     return q("SELECT id, usuario_id, usuario_nombre, cliente, BIMs_instalados FROM clientes")
@@ -57,11 +78,11 @@ def get_biorreactores_raw() -> pd.DataFrame:
 
 @st.cache_data(ttl=180)
 def get_distinct_bims_from_registros() -> pd.DataFrame:
-    return q("SELECT DISTINCT BIM AS numero_bim FROM registros ORDER BY numero_bim")
+    return q("SELECT DISTINCT BIM AS numero_bim FROM registros WHERE BIM IS NOT NULL ORDER BY numero_bim")
 
 @st.cache_data(ttl=180)
 def get_distinct_bims_from_eventos() -> pd.DataFrame:
-    return q("SELECT DISTINCT numero_bim FROM fechas_BIMs ORDER BY numero_bim")
+    return q("SELECT DISTINCT numero_bim FROM fechas_BIMs WHERE numero_bim IS NOT NULL ORDER BY numero_bim")
 
 @st.cache_data(ttl=180)
 def get_latest_usuario_por_bim() -> pd.DataFrame:
@@ -77,7 +98,7 @@ def get_latest_usuario_por_bim() -> pd.DataFrame:
     """)
 
 @st.cache_data(ttl=180)
-def get_eventos(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
+def get_eventos(bim, d1: datetime, d2: datetime) -> pd.DataFrame:
     return q("""
         SELECT id, numero_bim, nombre_evento, fecha, comentarios
         FROM fechas_BIMs
@@ -86,7 +107,7 @@ def get_eventos(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
     """, {"bim": bim, "d1": d1, "d2": d2})
 
 @st.cache_data(ttl=180)
-def get_diagnosticos(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
+def get_diagnosticos(bim, d1: datetime, d2: datetime) -> pd.DataFrame:
     return q("""
         SELECT d.id, d.usuario_id, d.PreguntaCliente, d.respuestaGPT, d.fecha
         FROM diagnosticos d
@@ -96,7 +117,7 @@ def get_diagnosticos(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
     """, {"bim": bim, "d1": d1, "d2": d2})
 
 @st.cache_data(ttl=180)
-def get_registros(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
+def get_registros(bim, d1: datetime, d2: datetime) -> pd.DataFrame:
     return q("""
         SELECT id, usuario_id, BIM, respuestaGPT, HEX, fecha
         FROM registros
@@ -105,7 +126,7 @@ def get_registros(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
     """, {"bim": bim, "d1": d1, "d2": d2})
 
 # ==========================================================
-# 🧠 ENSAMBLAR “CATÁLOGO DE BIMs” ROBUSTO
+# 🧠 CATÁLOGO DE BIMs ROBUSTO (si no hay biorreactores usa registros/eventos)
 # ==========================================================
 @st.cache_data(ttl=180)
 def construir_catalogo_bims() -> pd.DataFrame:
@@ -113,32 +134,74 @@ def construir_catalogo_bims() -> pd.DataFrame:
     br = get_biorreactores_raw()
 
     if not br.empty:
+        br["cliente"] = _norm_cliente(br["cliente"])
+        br["numero_bim"] = _norm_bim(br["numero_bim"])
         cat = br.copy()
     else:
         b1 = get_distinct_bims_from_registros()
         b2 = get_distinct_bims_from_eventos()
-        bims = pd.concat([b1, b2], ignore_index=True).drop_duplicates().sort_values("numero_bim")
+        bims = pd.concat([b1, b2], ignore_index=True).drop_duplicates()
         if bims.empty:
-            return pd.DataFrame(columns=["numero_bim","cliente","tipo_microalga","tipo_aireador",
-                                         "uso_luz_artificial","altura_bim","latitud","longitud","fecha_instalacion"])
+            return pd.DataFrame(columns=[
+                "cliente","numero_bim","latitud","longitud","altura_bim",
+                "tipo_microalga","uso_luz_artificial","tipo_aireador","fecha_instalacion"
+            ])
         latest = get_latest_usuario_por_bim()
-        cat = bims.merge(latest, on="numero_bim", how="left")
-        cat = cat.merge(clientes[["usuario_id","cliente"]], on="usuario_id", how="left")
-        cat["tipo_microalga"] = None
-        cat["tipo_aireador"] = None
-        cat["uso_luz_artificial"] = None
-        cat["altura_bim"] = None
-        cat["latitud"] = None
-        cat["longitud"] = None
-        cat["fecha_instalacion"] = None
-        cat = cat[["cliente","numero_bim","latitud","longitud","altura_bim","tipo_microalga",
-                   "uso_luz_artificial","tipo_aireador","fecha_instalacion"]].copy()
+        cat = (bims.merge(latest, on="numero_bim", how="left")
+                    .merge(clientes[["usuario_id","cliente"]], on="usuario_id", how="left"))
+        cat["cliente"] = _norm_cliente(cat["cliente"].fillna("(Sin cliente)"))
+        cat["numero_bim"] = _norm_bim(cat["numero_bim"])
+        # columnas técnicas vacías si no existen
+        for c in ["tipo_microalga","tipo_aireador","uso_luz_artificial",
+                  "altura_bim","latitud","longitud","fecha_instalacion"]:
+            if c not in cat.columns:
+                cat[c] = None
+        cat = cat[["cliente","numero_bim","latitud","longitud","altura_bim",
+                   "tipo_microalga","uso_luz_artificial","tipo_aireador","fecha_instalacion"]].copy()
 
-    if "numero_bim" in cat.columns:
-        cat["numero_bim"] = cat["numero_bim"].astype(str)
-    if "cliente" in cat.columns:
-        cat["cliente"] = cat["cliente"].fillna("(Sin cliente)")
+    # deduplicar por (cliente, numero_bim)
+    cat = cat.dropna(subset=["numero_bim"]).drop_duplicates(subset=["cliente","numero_bim"])
     return cat
+
+# ==========================================================
+# 📊 KPIs CORRECTOS (par cliente,bim)
+# ==========================================================
+@st.cache_data(ttl=180)
+def get_kpis():
+    c = q("SELECT COUNT(*) AS c FROM clientes")
+    total_clientes = int(c["c"].iloc[0]) if not c.empty else 0
+
+    # Distinct (cliente, numero_bim) a partir de todas las fuentes, normalizando
+    kpi_bims = q("""
+        SELECT COUNT(*) AS c FROM (
+            SELECT DISTINCT TRIM(COALESCE(b.cliente,''))      AS cliente,
+                            TRIM(CAST(b.numero_bim AS CHAR))  AS bim
+            FROM biorreactores b
+            WHERE b.numero_bim IS NOT NULL
+
+            UNION
+            SELECT DISTINCT TRIM(COALESCE(c.cliente,''))      AS cliente,
+                            TRIM(CAST(r.BIM AS CHAR))         AS bim
+            FROM registros r
+            LEFT JOIN clientes c ON c.usuario_id = r.usuario_id
+            WHERE r.BIM IS NOT NULL
+
+            UNION
+            SELECT DISTINCT TRIM(COALESCE(c2.cliente,''))     AS cliente,
+                            TRIM(CAST(f.numero_bim AS CHAR))  AS bim
+            FROM fechas_BIMs f
+            LEFT JOIN biorreactores b2 ON b2.numero_bim = f.numero_bim
+            LEFT JOIN clientes c2 ON c2.cliente = b2.cliente
+            WHERE f.numero_bim IS NOT NULL
+        ) t
+        WHERE t.bim <> ''
+    """)
+    total_bims = int(kpi_bims["c"].iloc[0]) if not kpi_bims.empty else 0
+
+    d = q("SELECT COUNT(*) AS c FROM diagnosticos"); total_diag = int(d["c"].iloc[0]) if not d.empty else 0
+    r = q("SELECT COUNT(*) AS c FROM registros");     total_regs = int(r["c"].iloc[0]) if not r.empty else 0
+    e = q("SELECT COUNT(*) AS c FROM fechas_BIMs");   total_eventos = int(e["c"].iloc[0]) if not e.empty else 0
+    return total_clientes, total_bims, total_diag, total_regs, total_eventos
 
 # ==========================================================
 # 🔗 ROUTER (Home / Detalle) con query params
@@ -159,22 +222,6 @@ if "page" not in st.session_state:
     st.session_state.page = qs.get("page", ["home"])[0]
 if "selected_bim" not in st.session_state:
     st.session_state.selected_bim = qs.get("bim", [None])[0]
-
-# ==========================================================
-# 📊 KPIs
-# ==========================================================
-@st.cache_data(ttl=180)
-def get_kpis():
-    c = q("SELECT COUNT(*) AS c FROM clientes"); tc = int(c["c"].iloc[0]) if not c.empty else 0
-    tb = q("""SELECT COUNT(*) AS c FROM (
-                SELECT DISTINCT numero_bim FROM biorreactores
-                UNION SELECT DISTINCT BIM AS numero_bim FROM registros
-                UNION SELECT DISTINCT numero_bim FROM fechas_BIMs
-              ) t"""); tb = int(tb["c"].iloc[0]) if not tb.empty else 0
-    d = q("SELECT COUNT(*) AS c FROM diagnosticos"); td = int(d["c"].iloc[0]) if not d.empty else 0
-    r = q("SELECT COUNT(*) AS c FROM registros"); tr = int(r["c"].iloc[0]) if not r.empty else 0
-    e = q("SELECT COUNT(*) AS c FROM fechas_BIMs"); te = int(e["c"].iloc[0]) if not e.empty else 0
-    return tc, tb, td, tr, te
 
 # ==========================================================
 # 🏠 HOME
@@ -202,7 +249,7 @@ def view_home():
     cliente_sel = st.sidebar.selectbox("👤 Cliente", clientes_opts)
 
     if cliente_sel != "Todos":
-        cat_f = catalogo[catalogo["cliente"] == cliente_sel].copy()
+        cat_f = catalogo[catalogo["cliente"] == _norm_cliente(pd.Series([cliente_sel])).iat[0]].copy()
     else:
         cat_f = catalogo.copy()
 
@@ -256,10 +303,13 @@ def view_detail():
     D1 = datetime.combine(d1, datetime.min.time())
     D2 = datetime.combine(d2, datetime.max.time())
 
+    # Asegurar tipo para el parámetro de SQL
+    bim_param = _to_int_if_possible(bim)
+
     T1, T2, T3 = st.tabs(["📄 Registros", "💬 Diagnósticos", "📅 Eventos BIM"])
 
     with T1:
-        df_r = get_registros(int(bim), D1, D2)
+        df_r = get_registros(bim_param, D1, D2)
         st.metric("Total registros", len(df_r))
         if df_r.empty:
             st.info("Sin registros en este rango.")
@@ -269,7 +319,7 @@ def view_detail():
                                file_name=f"registros_BIM{bim}.csv")
 
     with T2:
-        df_d = get_diagnosticos(int(bim), D1, D2)
+        df_d = get_diagnosticos(bim_param, D1, D2)
         st.metric("Total diagnósticos", len(df_d))
         if df_d.empty:
             st.info("Sin diagnósticos en este rango.")
@@ -279,7 +329,7 @@ def view_detail():
                                file_name=f"diagnosticos_BIM{bim}.csv")
 
     with T3:
-        df_e = get_eventos(int(bim), D1, D2)
+        df_e = get_eventos(bim_param, D1, D2)
         st.metric("Total eventos", len(df_e))
         if df_e.empty:
             st.info("Sin eventos para este BIM.")
@@ -293,7 +343,9 @@ def view_detail():
 # ==========================================================
 # 🚦 ROUTING
 # ==========================================================
-if st.session_state.page == "detail":
+qs = st.experimental_get_query_params()
+page = st.session_state.get("page", qs.get("page", ["home"])[0])
+if page == "detail":
     view_detail()
 else:
     view_home()
