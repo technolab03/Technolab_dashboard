@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (robusta: funciona aunque biorreactores esté vacío)
+# app.py — Technolab Data Center (Home + Vista Detalle con botón Volver)
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
@@ -16,6 +16,11 @@ div.stButton > button {
   font-size:20px; height:120px; width:100%; margin:8px 0; transition:.2s;
 }
 div.stButton > button:hover { background:#0096C7; transform:scale(1.03); }
+a.btn-link {
+  display:inline-block; padding:10px 14px; border-radius:10px;
+  background:#0f172a; color:#e2e8f0; text-decoration:none; margin:8px 0;
+}
+a.btn-link:hover { background:#1e293b; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -43,7 +48,6 @@ def get_clientes() -> pd.DataFrame:
 
 @st.cache_data(ttl=180)
 def get_biorreactores_raw() -> pd.DataFrame:
-    # Puede estar vacío; NO paramos la app si no hay filas
     return q("""
         SELECT id, cliente, numero_bim, latitud, longitud, altura_bim,
                tipo_microalga, uso_luz_artificial, tipo_aireador, `fecha_instalación` AS fecha_instalacion
@@ -61,7 +65,6 @@ def get_distinct_bims_from_eventos() -> pd.DataFrame:
 
 @st.cache_data(ttl=180)
 def get_latest_usuario_por_bim() -> pd.DataFrame:
-    # usuario_id más reciente por BIM (para mapear a cliente si falta biorreactores)
     return q("""
         SELECT r.BIM AS numero_bim, r.usuario_id
         FROM registros r
@@ -110,21 +113,17 @@ def construir_catalogo_bims() -> pd.DataFrame:
     br = get_biorreactores_raw()
 
     if not br.empty:
-        # Tenemos biorreactores reales → usar directo
         cat = br.copy()
     else:
-        # Fallback: armar listado de BIMs desde registros + eventos
         b1 = get_distinct_bims_from_registros()
         b2 = get_distinct_bims_from_eventos()
         bims = pd.concat([b1, b2], ignore_index=True).drop_duplicates().sort_values("numero_bim")
         if bims.empty:
             return pd.DataFrame(columns=["numero_bim","cliente","tipo_microalga","tipo_aireador",
                                          "uso_luz_artificial","altura_bim","latitud","longitud","fecha_instalacion"])
-        # Mapear cliente desde usuario_id más reciente por BIM
         latest = get_latest_usuario_por_bim()
         cat = bims.merge(latest, on="numero_bim", how="left")
         cat = cat.merge(clientes[["usuario_id","cliente"]], on="usuario_id", how="left")
-        # Completar columnas técnicas como no registradas
         cat["tipo_microalga"] = None
         cat["tipo_aireador"] = None
         cat["uso_luz_artificial"] = None
@@ -132,11 +131,9 @@ def construir_catalogo_bims() -> pd.DataFrame:
         cat["latitud"] = None
         cat["longitud"] = None
         cat["fecha_instalacion"] = None
-        # Reordenar
         cat = cat[["cliente","numero_bim","latitud","longitud","altura_bim","tipo_microalga",
                    "uso_luz_artificial","tipo_aireador","fecha_instalacion"]].copy()
 
-    # Asegurar tipos suaves
     if "numero_bim" in cat.columns:
         cat["numero_bim"] = cat["numero_bim"].astype(str)
     if "cliente" in cat.columns:
@@ -144,122 +141,161 @@ def construir_catalogo_bims() -> pd.DataFrame:
     return cat
 
 # ==========================================================
+# 🔗 ROUTER (Home / Detalle) con query params
+# ==========================================================
+def go_home():
+    st.session_state.page = "home"
+    st.session_state.selected_bim = None
+    st.experimental_set_query_params(page="home")
+
+def go_detail(bim: str):
+    st.session_state.page = "detail"
+    st.session_state.selected_bim = bim
+    st.experimental_set_query_params(page="detail", bim=bim)
+
+# init state desde URL
+qs = st.experimental_get_query_params()
+if "page" not in st.session_state:
+    st.session_state.page = qs.get("page", ["home"])[0]
+if "selected_bim" not in st.session_state:
+    st.session_state.selected_bim = qs.get("bim", [None])[0]
+
+# ==========================================================
 # 📊 KPIs
 # ==========================================================
 @st.cache_data(ttl=180)
 def get_kpis():
-    total_clientes = q("SELECT COUNT(*) AS c FROM clientes")["c"].iloc[0] if not q("SELECT COUNT(*) AS c FROM clientes").empty else 0
-    total_bims = q("SELECT COUNT(*) AS c FROM (SELECT DISTINCT numero_bim FROM biorreactores UNION SELECT DISTINCT BIM FROM registros UNION SELECT DISTINCT numero_bim FROM fechas_BIMs) t")["c"].iloc[0] if not q("SELECT COUNT(*) AS c FROM (SELECT DISTINCT numero_bim FROM biorreactores UNION SELECT DISTINCT BIM FROM registros UNION SELECT DISTINCT numero_bim FROM fechas_BIMs) t").empty else 0
-    total_diag = q("SELECT COUNT(*) AS c FROM diagnosticos")["c"].iloc[0] if not q("SELECT COUNT(*) AS c FROM diagnosticos").empty else 0
-    total_regs = q("SELECT COUNT(*) AS c FROM registros")["c"].iloc[0] if not q("SELECT COUNT(*) AS c FROM registros").empty else 0
-    total_eventos = q("SELECT COUNT(*) AS c FROM fechas_BIMs")["c"].iloc[0] if not q("SELECT COUNT(*) AS c FROM fechas_BIMs").empty else 0
-    return total_clientes, total_bims, total_diag, total_regs, total_eventos
+    c = q("SELECT COUNT(*) AS c FROM clientes"); tc = int(c["c"].iloc[0]) if not c.empty else 0
+    tb = q("""SELECT COUNT(*) AS c FROM (
+                SELECT DISTINCT numero_bim FROM biorreactores
+                UNION SELECT DISTINCT BIM AS numero_bim FROM registros
+                UNION SELECT DISTINCT numero_bim FROM fechas_BIMs
+              ) t"""); tb = int(tb["c"].iloc[0]) if not tb.empty else 0
+    d = q("SELECT COUNT(*) AS c FROM diagnosticos"); td = int(d["c"].iloc[0]) if not d.empty else 0
+    r = q("SELECT COUNT(*) AS c FROM registros"); tr = int(r["c"].iloc[0]) if not r.empty else 0
+    e = q("SELECT COUNT(*) AS c FROM fechas_BIMs"); te = int(e["c"].iloc[0]) if not e.empty else 0
+    return tc, tb, td, tr, te
 
 # ==========================================================
-# 🌟 UI
+# 🏠 HOME
 # ==========================================================
-st.title("🧠 Technolab Data Center")
+def view_home():
+    st.title("🧠 Technolab Data Center")
 
-# KPIs
-k1, k2, k3, k4, k5 = st.columns(5)
-tc, tb, tdg, trg, tev = get_kpis()
-k1.metric("👥 Clientes", tc)
-k2.metric("🧩 BIMs", tb)
-k3.metric("💬 Diagnósticos", tdg)
-k4.metric("📄 Registros", trg)
-k5.metric("📅 Eventos", tev)
+    tc, tb, td, tr, te = get_kpis()
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("👥 Clientes", tc)
+    k2.metric("🧩 BIMs", tb)
+    k3.metric("💬 Diagnósticos", td)
+    k4.metric("📄 Registros", tr)
+    k5.metric("📅 Eventos", te)
 
-st.divider()
+    st.divider()
 
-# Catálogo de BIMs (siempre disponible)
-catalogo = construir_catalogo_bims()
-if catalogo.empty:
-    st.warning("No hay BIMs detectados aún (ni en biorreactores, ni en registros/eventos).")
-    st.stop()
+    catalogo = construir_catalogo_bims()
+    if catalogo.empty:
+        st.warning("No hay BIMs detectados aún (ni en biorreactores, ni en registros/eventos).")
+        return
 
-# ------- Filtros -------
-st.sidebar.title("🎛️ Filtros")
-clientes_opts = ["Todos"] + sorted(catalogo["cliente"].dropna().unique().tolist())
-cliente_sel = st.sidebar.selectbox("👤 Cliente", clientes_opts)
+    st.sidebar.title("🎛️ Filtros")
+    clientes_opts = ["Todos"] + sorted(catalogo["cliente"].dropna().unique().tolist())
+    cliente_sel = st.sidebar.selectbox("👤 Cliente", clientes_opts)
 
-if cliente_sel != "Todos":
-    cat_f = catalogo[catalogo["cliente"] == cliente_sel].copy()
+    if cliente_sel != "Todos":
+        cat_f = catalogo[catalogo["cliente"] == cliente_sel].copy()
+    else:
+        cat_f = catalogo.copy()
+
+    st.subheader("🧫 Selección de BIMs")
+    for cliente, grp in cat_f.groupby("cliente"):
+        st.markdown(f"### 👤 {cliente}")
+        cols = st.columns(3)
+        for i, (_, r) in enumerate(grp.iterrows()):
+            with cols[i % 3]:
+                label = f"🧬 BIM {r['numero_bim']}\n\nMicroalga: {r.get('tipo_microalga') or '-'}"
+                if st.button(label, key=f"btn_bim_{cliente}_{r['numero_bim']}"):
+                    go_detail(str(r["numero_bim"]))
+
+# ==========================================================
+# 🔎 DETALLE
+# ==========================================================
+def view_detail():
+    catalogo = construir_catalogo_bims()
+    bim = st.session_state.selected_bim
+    if not bim or bim not in catalogo["numero_bim"].values:
+        st.info("BIM no encontrado. Volviendo al inicio…")
+        go_home()
+        st.stop()
+
+    # Botón volver
+    st.markdown('<a class="btn-link" href="?page=home" target="_self">⬅️ Volver</a>', unsafe_allow_html=True)
+    st.title(f"🧬 BIM {bim}")
+
+    sel = catalogo[catalogo["numero_bim"] == bim].iloc[0]
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"**Cliente:** {sel['cliente']}")
+        st.markdown(f"**Microalga:** {sel.get('tipo_microalga') or '—'}")
+        st.markdown(f"**Aireador:** {sel.get('tipo_aireador') or '—'}")
+        st.markdown(f"**Altura:** {sel.get('altura_bim') or '—'} m")
+    with c2:
+        luz = sel.get('uso_luz_artificial')
+        st.markdown(f"**Luz artificial:** {'Sí' if bool(luz) else 'No' if luz is not None else '—'}")
+        st.markdown(f"**Fecha instalación:** {sel.get('fecha_instalacion') or '—'}")
+        st.markdown(f"**Coordenadas:** ({sel.get('latitud') or '—'}, {sel.get('longitud') or '—'})")
+
+    st.divider()
+
+    hoy = datetime.utcnow().date()
+    cold1, cold2 = st.columns(2)
+    with cold1:
+        d1 = st.date_input("Desde", hoy - timedelta(days=30), key="d1_detail")
+    with cold2:
+        d2 = st.date_input("Hasta", hoy, key="d2_detail")
+    D1 = datetime.combine(d1, datetime.min.time())
+    D2 = datetime.combine(d2, datetime.max.time())
+
+    T1, T2, T3 = st.tabs(["📄 Registros", "💬 Diagnósticos", "📅 Eventos BIM"])
+
+    with T1:
+        df_r = get_registros(int(bim), D1, D2)
+        st.metric("Total registros", len(df_r))
+        if df_r.empty:
+            st.info("Sin registros en este rango.")
+        else:
+            st.dataframe(df_r, use_container_width=True)
+            st.download_button("📥 Descargar CSV", df_r.to_csv(index=False).encode("utf-8"),
+                               file_name=f"registros_BIM{bim}.csv")
+
+    with T2:
+        df_d = get_diagnosticos(int(bim), D1, D2)
+        st.metric("Total diagnósticos", len(df_d))
+        if df_d.empty:
+            st.info("Sin diagnósticos en este rango.")
+        else:
+            st.dataframe(df_d, use_container_width=True)
+            st.download_button("📥 Descargar CSV", df_d.to_csv(index=False).encode("utf-8"),
+                               file_name=f"diagnosticos_BIM{bim}.csv")
+
+    with T3:
+        df_e = get_eventos(int(bim), D1, D2)
+        st.metric("Total eventos", len(df_e))
+        if df_e.empty:
+            st.info("Sin eventos para este BIM.")
+        else:
+            st.dataframe(df_e, use_container_width=True)
+            st.download_button("📥 Descargar CSV", df_e.to_csv(index=False).encode("utf-8"),
+                               file_name=f"eventos_BIM{bim}.csv")
+
+    st.caption("Tip: puedes compartir esta vista; la URL ya incluye el BIM seleccionado.")
+
+# ==========================================================
+# 🚦 ROUTING
+# ==========================================================
+if st.session_state.page == "detail":
+    view_detail()
 else:
-    cat_f = catalogo.copy()
-
-bim_opts = sorted(cat_f["numero_bim"].unique().tolist())
-bim_sel = st.sidebar.selectbox("🧬 BIM", bim_opts)
-
-rango = st.sidebar.date_input(
-    "📆 Rango de fechas",
-    value=(datetime.today() - timedelta(days=30), datetime.today())
-)
-if isinstance(rango, tuple) and len(rango) == 2:
-    D1 = datetime.combine(pd.to_datetime(rango[0]).date(), datetime.min.time())
-    D2 = datetime.combine(pd.to_datetime(rango[1]).date(), datetime.max.time())
-else:
-    D1 = datetime.combine((datetime.today() - timedelta(days=30)).date(), datetime.min.time())
-    D2 = datetime.combine(datetime.today().date(), datetime.max.time())
-
-# ------- Tarjetas BIMs -------
-st.subheader("🧫 Selección de BIMs")
-for cliente, grp in cat_f.groupby("cliente"):
-    st.markdown(f"### 👤 {cliente}")
-    cols = st.columns(3)
-    for i, (_, r) in enumerate(grp.iterrows()):
-        with cols[i % 3]:
-            label = f"🧬 BIM {r['numero_bim']}\n\nMicroalga: {r.get('tipo_microalga') or '-'}"
-            if st.button(label, key=f"btn_bim_{cliente}_{r['numero_bim']}"):
-                bim_sel = r["numero_bim"]
-
-st.divider()
-
-# ------- Detalle del BIM seleccionado -------
-sel = catalogo[catalogo["numero_bim"] == bim_sel].iloc[0]
-st.subheader(f"🧬 BIM {bim_sel} — Cliente: {sel['cliente']}")
-
-c1, c2 = st.columns(2)
-with c1:
-    st.markdown(f"**Microalga:** {sel.get('tipo_microalga') or '—'}")
-    st.markdown(f"**Aireador:** {sel.get('tipo_aireador') or '—'}")
-    st.markdown(f"**Altura:** {sel.get('altura_bim') or '—'} m")
-with c2:
-    luz = sel.get('uso_luz_artificial')
-    st.markdown(f"**Luz artificial:** {'Sí' if bool(luz) else 'No' if luz is not None else '—'}")
-    st.markdown(f"**Fecha instalación:** {sel.get('fecha_instalacion') or '—'}")
-    st.markdown(f"**Coordenadas:** ({sel.get('latitud') or '—'}, {sel.get('longitud') or '—'})")
-
-# ------- Tabs -------
-T1, T2, T3 = st.tabs(["📄 Registros", "💬 Diagnósticos", "📅 Eventos BIM"])
-
-with T1:
-    df_r = get_registros(int(bim_sel), D1, D2)
-    st.metric("Total registros", len(df_r))
-    if df_r.empty:
-        st.info("Sin registros en este rango.")
-    else:
-        st.dataframe(df_r, use_container_width=True)
-        st.download_button("📥 Descargar CSV", df_r.to_csv(index=False).encode("utf-8"),
-                           file_name=f"registros_BIM{bim_sel}.csv")
-
-with T2:
-    df_d = get_diagnosticos(int(bim_sel), D1, D2)
-    st.metric("Total diagnósticos", len(df_d))
-    if df_d.empty:
-        st.info("Sin diagnósticos en este rango.")
-    else:
-        st.dataframe(df_d, use_container_width=True)
-        st.download_button("📥 Descargar CSV", df_d.to_csv(index=False).encode("utf-8"),
-                           file_name=f"diagnosticos_BIM{bim_sel}.csv")
-
-with T3:
-    df_e = get_eventos(int(bim_sel), D1, D2)
-    st.metric("Total eventos", len(df_e))
-    if df_e.empty:
-        st.info("Sin eventos para este BIM.")
-    else:
-        st.dataframe(df_e, use_container_width=True)
-        st.download_button("📥 Descargar CSV", df_e.to_csv(index=False).encode("utf-8"),
-                           file_name=f"eventos_BIM{bim_sel}.csv")
+    view_home()
 
 st.caption("© Technolab — Dashboard unificado BIMs / Make / WhatsApp.")
