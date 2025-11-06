@@ -26,7 +26,7 @@ def load_data():
     diagnosticos = pd.read_sql("SELECT * FROM diagnosticos", engine)
     registros = pd.read_sql("SELECT * FROM registros", engine)
 
-    # 🔧 Convertir columnas de fecha si existen
+    # 🔧 Convertir columnas 'fecha' en todas las tablas
     for df in [fechas_bims, diagnosticos, registros]:
         if "fecha" in df.columns:
             df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
@@ -61,13 +61,14 @@ else:
     start_date, end_date = datetime.today() - timedelta(days=30), datetime.today()
 
 # ======================================================
-# 🧮 APLICAR FILTROS
+# 🧮 APLICAR FILTROS (CON CONVERSIÓN SEGURA)
 # ======================================================
 biorreactores_f = biorreactores.copy()
 fechas_f = fechas_bims.copy()
 diag_f = diagnosticos.copy()
 reg_f = registros.copy()
 
+# Filtros por cliente
 if cliente_sel != "Todos":
     biorreactores_f = biorreactores_f[biorreactores_f["cliente"] == cliente_sel]
     if "numero_bim" in fechas_f.columns:
@@ -77,6 +78,7 @@ if cliente_sel != "Todos":
     if "usuario_id" in reg_f.columns and "usuario_id" in clientes.columns:
         reg_f = reg_f.merge(clientes[clientes["cliente"] == cliente_sel][["usuario_id"]], on="usuario_id", how="inner")
 
+# Filtros por BIM
 if bim_sel != "Todos":
     biorreactores_f = biorreactores_f[biorreactores_f["numero_bim"].astype(str) == bim_sel]
     if "numero_bim" in fechas_f.columns:
@@ -84,12 +86,18 @@ if bim_sel != "Todos":
     if "BIM" in reg_f.columns:
         reg_f = reg_f[reg_f["BIM"].astype(str) == bim_sel]
 
-# 🔧 Filtrado por rango de fechas (solo si columna existe)
-if "fecha" in fechas_f.columns:
+# 🧹 Forzar conversión y eliminar filas con fechas inválidas
+for df in [fechas_f, diag_f, reg_f]:
+    if "fecha" in df.columns:
+        df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+        df.dropna(subset=["fecha"], inplace=True)
+
+# ✅ Filtrar por rango de fechas solo si existen valores válidos
+if "fecha" in fechas_f.columns and not fechas_f["fecha"].empty:
     fechas_f = fechas_f[(fechas_f["fecha"] >= start_date) & (fechas_f["fecha"] < end_date)]
-if "fecha" in diag_f.columns:
+if "fecha" in diag_f.columns and not diag_f["fecha"].empty:
     diag_f = diag_f[(diag_f["fecha"] >= start_date) & (diag_f["fecha"] < end_date)]
-if "fecha" in reg_f.columns:
+if "fecha" in reg_f.columns and not reg_f["fecha"].empty:
     reg_f = reg_f[(reg_f["fecha"] >= start_date) & (reg_f["fecha"] < end_date)]
 
 # ======================================================
@@ -120,7 +128,6 @@ else:
                 if st.button("🔍 Ver detalles", key=f"bim_{row['numero_bim']}"):
                     st.session_state["bim_actual"] = row["numero_bim"]
 
-# Selección por defecto
 if "bim_actual" not in st.session_state:
     if not biorreactores_f.empty:
         st.session_state["bim_actual"] = biorreactores_f.iloc[0]["numero_bim"]
