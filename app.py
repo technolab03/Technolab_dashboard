@@ -1,224 +1,201 @@
-import streamlit as st
-import pandas as pd
-from sqlalchemy import create_engine
-import plotly.express as px
-import pydeck as pdk
+# app.py — Technolab Dashboard (versión mejorada visual)
+import os
 from datetime import datetime, timedelta
+import pandas as pd
+import streamlit as st
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import URL
 
-st.set_page_config(page_title="Technolab Data Center", page_icon="🧪", layout="wide")
+# ==========================================================
+# CONFIGURACIÓN INICIAL Y ESTILO
+# ==========================================================
+st.set_page_config(page_title="Technolab Dashboard", page_icon="🧪", layout="wide")
 
-# ======================================================
-# 🔗 CONEXIÓN DIRECTA A MYSQL (DigitalOcean)
-# ======================================================
-engine = create_engine(
-    "mysql+pymysql://makeuser:NUEVA_PASSWORD_SEGURA@143.198.144.39:3306/technolab",
-    pool_pre_ping=True
-)
-
-# ======================================================
-# 📦 CARGA DE DATOS CON CONVERSIÓN DE FECHAS
-# ======================================================
-@st.cache_data(show_spinner=False)
-def load_data():
-    clientes = pd.read_sql("SELECT * FROM clientes", engine)
-    biorreactores = pd.read_sql("SELECT * FROM biorreactores", engine)
-    fechas_bims = pd.read_sql("SELECT * FROM fechas_BIMs", engine)
-    diagnosticos = pd.read_sql("SELECT * FROM diagnosticos", engine)
-    registros = pd.read_sql("SELECT * FROM registros", engine)
-
-    # 🔧 Convertir columnas 'fecha' en todas las tablas si existen
-    for df in [fechas_bims, diagnosticos, registros]:
-        if "fecha" in df.columns:
-            df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
-
-    return clientes, biorreactores, fechas_bims, diagnosticos, registros
-
-
-clientes, biorreactores, fechas_bims, diagnosticos, registros = load_data()
-
-# ======================================================
-# 🎛️ SIDEBAR: FILTROS
-# ======================================================
-st.sidebar.title("🎛️ Filtros de visualización")
-
-clientes_lista = sorted(clientes["cliente"].dropna().unique().tolist())
-cliente_sel = st.sidebar.selectbox("👤 Cliente", ["Todos"] + clientes_lista)
-
-if cliente_sel != "Todos":
-    bims_cliente = biorreactores[biorreactores["cliente"] == cliente_sel]["numero_bim"].unique().tolist()
-else:
-    bims_cliente = sorted(biorreactores["numero_bim"].unique().tolist())
-
-bim_sel = st.sidebar.selectbox("🧫 BIM", ["Todos"] + [str(x) for x in bims_cliente])
-
-rango = st.sidebar.date_input(
-    "📆 Rango de fechas",
-    value=(datetime.today() - timedelta(days=30), datetime.today())
-)
-if isinstance(rango, tuple) and len(rango) == 2:
-    start_date, end_date = pd.to_datetime(rango[0]), pd.to_datetime(rango[1]) + timedelta(days=1)
-else:
-    start_date, end_date = datetime.today() - timedelta(days=30), datetime.today()
-
-# ======================================================
-# 🧮 APLICAR FILTROS CON VALIDACIÓN DE TIPOS
-# ======================================================
-biorreactores_f = biorreactores.copy()
-fechas_f = fechas_bims.copy()
-diag_f = diagnosticos.copy()
-reg_f = registros.copy()
-
-# Filtros por cliente
-if cliente_sel != "Todos":
-    biorreactores_f = biorreactores_f[biorreactores_f["cliente"] == cliente_sel]
-    if "numero_bim" in fechas_f.columns:
-        fechas_f = fechas_f.merge(biorreactores_f[["numero_bim"]], on="numero_bim", how="inner")
-    if "usuario_id" in diag_f.columns and "usuario_id" in clientes.columns:
-        diag_f = diag_f.merge(clientes[clientes["cliente"] == cliente_sel][["usuario_id"]], on="usuario_id", how="inner")
-    if "usuario_id" in reg_f.columns and "usuario_id" in clientes.columns:
-        reg_f = reg_f.merge(clientes[clientes["cliente"] == cliente_sel][["usuario_id"]], on="usuario_id", how="inner")
-
-# Filtros por BIM
-if bim_sel != "Todos":
-    biorreactores_f = biorreactores_f[biorreactores_f["numero_bim"].astype(str) == bim_sel]
-    if "numero_bim" in fechas_f.columns:
-        fechas_f = fechas_f[fechas_f["numero_bim"].astype(str) == bim_sel]
-    if "BIM" in reg_f.columns:
-        reg_f = reg_f[reg_f["BIM"].astype(str) == bim_sel]
-
-# 🧹 Limpieza de fechas
-for df in [fechas_f, diag_f, reg_f]:
-    if "fecha" in df.columns:
-        df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
-        df = df[df["fecha"].notna()]
-        # asegurar tipo datetime64
-        if not pd.api.types.is_datetime64_any_dtype(df["fecha"]):
-            df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
-
-# ✅ Filtrar por rango de fechas SOLO si la columna es datetime
-def filtrar_por_fecha(df):
-    if "fecha" in df.columns and pd.api.types.is_datetime64_any_dtype(df["fecha"]):
-        return df[(df["fecha"] >= start_date) & (df["fecha"] < end_date)]
-    return df
-
-fechas_f = filtrar_por_fecha(fechas_f)
-diag_f = filtrar_por_fecha(diag_f)
-reg_f = filtrar_por_fecha(reg_f)
-
-# ======================================================
-# 🧠 ENCABEZADO
-# ======================================================
 st.markdown("""
-# 🧪 Technolab Data Center  
-Visualizador de clientes, BIMs y diagnósticos automáticos.
-""")
+<style>
+#MainMenu, header, footer {visibility: hidden;}
+div[data-testid="stMetricValue"] {
+  font-size: 26px; font-weight: bold; color: #004B7F;
+}
+div[data-testid="stMetricDelta"] {
+  color: #007ACC !important;
+}
+div.stButton > button {
+  border-radius: 16px; background:#004B7F; color:#fff;
+  font-size:20px; height:120px; width:100%; margin:8px 0; transition:.2s;
+}
+div.stButton > button:hover { background:#007ACC; transform:scale(1.03); }
+</style>
+""", unsafe_allow_html=True)
 
-# ======================================================
-# 🧫 TARJETAS DE BIORREACTORES
-# ======================================================
-st.markdown("### 🧬 Biorreactores disponibles")
+# ==========================================================
+# CONEXIÓN MYSQL SEGURA (como en tu versión original)
+# ==========================================================
+def get_engine():
+    missing = []
+    host = st.secrets.get("mysql", {}).get("host") or os.getenv("MYSQL_HOST")
+    user = st.secrets.get("mysql", {}).get("user") or os.getenv("MYSQL_USER")
+    pwd  = st.secrets.get("mysql", {}).get("password") or os.getenv("MYSQL_PASSWORD")
+    db   = st.secrets.get("mysql", {}).get("db") or os.getenv("MYSQL_DB")
+    port = int(st.secrets.get("mysql", {}).get("port", os.getenv("MYSQL_PORT", 3306)))
+    if not host: missing.append("host")
+    if not user: missing.append("user")
+    if pwd is None: missing.append("password")
+    if not db: missing.append("db")
+    if missing:
+        st.error(f"❌ Falta configurar Secrets de MySQL: {', '.join(missing)}.\n"
+                 "Ve a Manage app → Settings → Secrets y define [mysql].")
+        st.stop()
 
-if biorreactores_f.empty:
-    st.info("No hay biorreactores para los filtros seleccionados.")
-else:
-    cols = st.columns(3)
-    for i, (_, row) in enumerate(biorreactores_f.iterrows()):
-        with cols[i % 3]:
-            c = st.container(border=True)
-            with c:
-                st.markdown(f"### 🧫 BIM #{row['numero_bim']}")
-                st.markdown(f"**Cliente:** {row['cliente']}")
-                st.markdown(f"**Microalga:** {row['tipo_microalga']}")
-                st.markdown(f"**Instalado:** {row['fecha_instalación']}")
-                if st.button("🔍 Ver detalles", key=f"bim_{row['numero_bim']}"):
-                    st.session_state["bim_actual"] = row["numero_bim"]
+    url = URL.create("mysql+pymysql", username=user, password=pwd,
+                     host=host, port=port, database=db, query={"charset":"utf8mb4"})
+    ssl_flag = (st.secrets.get("mysql", {}).get("ssl", "false") or os.getenv("MYSQL_SSL", "false")).lower()
+    connect_args = {"ssl": {}} if ssl_flag in ("true","1") else {}
 
-if "bim_actual" not in st.session_state:
-    if not biorreactores_f.empty:
-        st.session_state["bim_actual"] = biorreactores_f.iloc[0]["numero_bim"]
+    eng = create_engine(url, pool_pre_ping=True, pool_recycle=1800, connect_args=connect_args)
+    try:
+        with eng.connect() as c:
+            c.execute(text("SELECT 1"))
+        return eng
+    except Exception as e:
+        st.error(f"❌ No pude conectar a MySQL (host={host}, db={db}).\n\n{type(e).__name__}: {e}")
+        st.stop()
 
-bim_actual = st.session_state.get("bim_actual")
+ENG = get_engine()
 
-# ======================================================
-# 🧫 DETALLE DEL BIM
-# ======================================================
-if bim_actual is None or bim_actual not in biorreactores["numero_bim"].values:
-    st.stop()
+# ==========================================================
+# HELPERS (no revientan la app)
+# ==========================================================
+def safe_sql(sql: str, params: dict | None = None) -> pd.DataFrame:
+    try:
+        return pd.read_sql(text(sql), ENG, params=params)
+    except Exception as e:
+        st.error(f"❌ Error SQL: {type(e).__name__}: {e}\n\nQuery:\n{sql}")
+        return pd.DataFrame()
 
-bior = biorreactores[biorreactores["numero_bim"] == bim_actual].iloc[0]
-st.markdown(f"## 🧫 Detalles del BIM #{bim_actual}")
-
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🧬 Datos del Biorreactor",
-    "📅 Eventos BIM",
-    "💬 Diagnósticos GPT",
-    "📄 Registros GPT/Make"
-])
-
-# ---------- TAB 1 ----------
-with tab1:
-    st.subheader("📋 Información técnica")
-    st.markdown(f"""
-    **Cliente:** {bior['cliente']}  
-    **Tipo de microalga:** {bior['tipo_microalga']}  
-    **Aireador:** {bior['tipo_aireador']}  
-    **Luz artificial:** {'Sí' if bior['uso_luz_artificial'] else 'No'}  
-    **Altura:** {bior['altura_bim']} m  
-    **Fecha instalación:** {bior['fecha_instalación']}  
+@st.cache_data(ttl=300)
+def q_biorreactores() -> pd.DataFrame:
+    return safe_sql("""
+        SELECT id, cliente, numero_bim, latitud, longitud, altura_bim, tipo_microalga,
+               uso_luz_artificial, tipo_aireador, `fecha_instalación` AS fecha_instalacion
+        FROM biorreactores ORDER BY cliente, numero_bim
     """)
-    if pd.notnull(bior["latitud"]) and pd.notnull(bior["longitud"]):
-        st.pydeck_chart(pdk.Deck(
-            map_style="mapbox://styles/mapbox/light-v9",
-            initial_view_state=pdk.ViewState(
-                latitude=bior["latitud"],
-                longitude=bior["longitud"],
-                zoom=12,
-                pitch=45
-            ),
-            layers=[
-                pdk.Layer(
-                    "ScatterplotLayer",
-                    data=pd.DataFrame([{
-                        "lat": bior["latitud"],
-                        "lon": bior["longitud"]
-                    }]),
-                    get_position='[lon, lat]',
-                    get_radius=60,
-                    get_color='[0, 150, 200, 200]'
-                )
-            ]
-        ))
-    else:
-        st.info("🌍 Este BIM no tiene coordenadas registradas.")
 
-# ---------- TAB 2 ----------
-with tab2:
-    st.subheader("📅 Eventos asociados")
-    if not fechas_f.empty:
-        st.dataframe(fechas_f.sort_values("fecha", ascending=False), use_container_width=True)
-    else:
-        st.info("No hay eventos registrados en este rango.")
+@st.cache_data(ttl=300)
+def q_registros(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
+    return safe_sql("""
+        SELECT id, usuario_id, BIM, respuestaGPT, HEX, fecha
+        FROM registros
+        WHERE BIM = :bim AND fecha BETWEEN :d1 AND :d2
+        ORDER BY fecha DESC
+    """, {"bim": bim, "d1": d1, "d2": d2})
 
-# ---------- TAB 3 ----------
-with tab3:
-    st.subheader("💬 Diagnósticos automáticos (GPT)")
-    if not diag_f.empty:
-        st.dataframe(
-            diag_f.sort_values("fecha", ascending=False)[["PreguntaCliente", "respuestaGPT", "fecha"]],
-            use_container_width=True, height=420
-        )
-    else:
-        st.info("Sin diagnósticos en el rango seleccionado.")
+@st.cache_data(ttl=300)
+def q_diagnosticos(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
+    return safe_sql("""
+        SELECT d.id, d.usuario_id, d.PreguntaCliente, d.respuestaGPT, d.fecha
+        FROM diagnosticos d
+        WHERE d.usuario_id IN (SELECT r.usuario_id FROM registros r WHERE r.BIM = :bim)
+          AND d.fecha BETWEEN :d1 AND :d2
+        ORDER BY d.fecha DESC
+    """, {"bim": bim, "d1": d1, "d2": d2})
 
-# ---------- TAB 4 ----------
-with tab4:
-    st.subheader("📄 Registros GPT / Make")
-    if not reg_f.empty:
-        st.dataframe(
-            reg_f.sort_values("fecha", ascending=False)[["BIM", "respuestaGPT", "HEX", "fecha"]],
-            use_container_width=True, height=420
-        )
-    else:
-        st.info("Sin registros disponibles.")
+@st.cache_data(ttl=300)
+def q_fechas_bims(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
+    return safe_sql("""
+        SELECT id, numero_bim, nombre_evento, fecha, comentarios
+        FROM fechas_BIMs
+        WHERE numero_bim = :bim AND fecha BETWEEN :d1 AND :d2
+        ORDER BY fecha DESC
+    """, {"bim": bim, "d1": d1, "d2": d2})
 
-st.caption("🧠 Technolab · Panel de Control Integrado · Datos recolectados por Make y WhatsApp.")
+# ==========================================================
+# ESTADO DE SESIÓN
+# ==========================================================
+if "bim_sel" not in st.session_state:
+    st.session_state.bim_sel = None
+if "cliente_sel" not in st.session_state:
+    st.session_state.cliente_sel = None
+
+# ==========================================================
+# VISTA PRINCIPAL — PORTADA CON MÉTRICAS GLOBALES
+# ==========================================================
+if st.session_state.bim_sel is None:
+    st.title("🧠 Technolab Data Center")
+
+    df_bims = q_biorreactores()
+    total_clientes = df_bims["cliente"].nunique()
+    total_bims = len(df_bims)
+    total_diag = safe_sql("SELECT COUNT(*) AS c FROM diagnosticos")["c"].iloc[0]
+    total_regs = safe_sql("SELECT COUNT(*) AS c FROM registros")["c"].iloc[0]
+    total_eventos = safe_sql("SELECT COUNT(*) AS c FROM fechas_BIMs")["c"].iloc[0]
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("👤 Clientes", total_clientes)
+    c2.metric("🧩 BIMs", total_bims)
+    c3.metric("💬 Diagnósticos", total_diag)
+    c4.metric("📄 Registros", total_regs)
+    c5.metric("📅 Eventos", total_eventos)
+
+    st.divider()
+    st.subheader("🧫 Selecciona un BIM")
+
+    if df_bims.empty:
+        st.info("No hay biorreactores para mostrar.")
+        st.stop()
+
+    clientes = ["(Todos)"] + sorted(df_bims["cliente"].dropna().unique().tolist())
+    cli = st.selectbox("Cliente", clientes)
+    st.session_state.cliente_sel = None if cli == "(Todos)" else cli
+    data = df_bims if st.session_state.cliente_sel is None else df_bims[df_bims["cliente"] == st.session_state.cliente_sel]
+
+    for cliente, grp in data.groupby("cliente"):
+        st.markdown(f"### 👤 {cliente}")
+        cols = st.columns(3)
+        i = 0
+        for _, r in grp.iterrows():
+            with cols[i % 3]:
+                label = f"🧬 BIM {int(r['numero_bim'])}\n\nMicroalga: {r.get('tipo_microalga','-')}"
+                if st.button(label, key=f"bim_{r['numero_bim']}"):
+                    st.session_state.bim_sel = int(r["numero_bim"])
+                    st.experimental_rerun()
+            i += 1
+
+# ==========================================================
+# VISTA DETALLE DE BIM
+# ==========================================================
+else:
+    bim = st.session_state.bim_sel
+    st.markdown(f"### 🔹 BIM {bim}  {'— ' + st.session_state.cliente_sel if st.session_state.cliente_sel else ''}")
+    st.button("⬅️ Volver", on_click=lambda: st.session_state.update({"bim_sel": None}))
+
+    hoy = datetime.utcnow().date()
+    d1 = st.date_input("Desde", hoy - timedelta(days=30))
+    d2 = st.date_input("Hasta", hoy)
+    D1 = datetime.combine(d1, datetime.min.time())
+    D2 = datetime.combine(d2, datetime.max.time())
+
+    T1, T2, T3 = st.tabs(["📊 Registros", "💬 Diagnósticos", "📅 Fechas BIMs"])
+
+    with T1:
+        regs = q_registros(bim, D1, D2)
+        st.metric("Registros", len(regs))
+        st.dataframe(regs, use_container_width=True)
+        if not regs.empty:
+            st.download_button("📥 Descargar CSV", regs.to_csv(index=False).encode("utf-8"), file_name=f"registros_BIM{bim}.csv")
+
+    with T2:
+        diags = q_diagnosticos(bim, D1, D2)
+        st.metric("Diagnósticos", len(diags))
+        st.dataframe(diags, use_container_width=True)
+        if not diags.empty:
+            st.download_button("📥 Descargar CSV", diags.to_csv(index=False).encode("utf-8"), file_name=f"diagnosticos_BIM{bim}.csv")
+
+    with T3:
+        fb = q_fechas_bims(bim, D1, D2)
+        st.metric("Eventos", len(fb))
+        st.dataframe(fb, use_container_width=True)
+        if not fb.empty:
+            st.download_button("📥 Descargar CSV", fb.to_csv(index=False).encode("utf-8"), file_name=f"eventos_BIM{bim}.csv")
+
+st.caption("© Technolab — Dashboard unificado BIMs / Make / WhatsApp.")
