@@ -1,172 +1,131 @@
-# app.py — Dashboard BIMs con autodiagnóstico
-import os
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
-import pandas as pd
+# app.py
+import traceback
+import platform
+import sys
+from typing import Callable, List, Tuple
+
 import streamlit as st
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL
 
-st.set_page_config(page_title="📊 BIMs — Technolab", page_icon="🧪", layout="wide")
+st.set_page_config(page_title="BIM Dashboard - Diagnóstico rápido", layout="wide")
 
-# ---------- Estilos (botones grandes) ----------
-st.markdown("""
-<style>
-#MainMenu, header, footer {visibility: hidden;}
-div.stButton > button {
-  border-radius: 16px; background:#004B7F; color:#fff;
-  font-size:20px; height:120px; width:100%; margin:8px 0; transition:.2s;
-}
-div.stButton > button:hover { background:#007ACC; transform:scale(1.03); }
-</style>
-""", unsafe_allow_html=True)
+# ---------- Utilidad para encapsular secciones y mostrar traceback en la UI ----------
+def run_section(title: str, fn: Callable[[], None]):
+    with st.container():
+        st.subheader(title)
+        try:
+            fn()
+            st.success(f"✅ {title}: OK")
+        except Exception as e:
+            st.error(f"❌ {title}: {e}")
+            st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
+            st.stop()  # evita que errores en una sección cascaden al resto
 
-# ---------- Conexión MySQL con diagnóstico ----------
-def get_engine():
-    # 1) Lee secrets/env y valida que existan
-    missing = []
-    host = st.secrets.get("mysql", {}).get("host") or os.getenv("MYSQL_HOST")
-    user = st.secrets.get("mysql", {}).get("user") or os.getenv("MYSQL_USER")
-    pwd  = st.secrets.get("mysql", {}).get("password") or os.getenv("MYSQL_PASSWORD")
-    db   = st.secrets.get("mysql", {}).get("db") or os.getenv("MYSQL_DB")
-    port = int(st.secrets.get("mysql", {}).get("port", os.getenv("MYSQL_PORT", 3306)))
-    if not host: missing.append("host"); 
-    if not user: missing.append("user")
-    if pwd is None: missing.append("password")
-    if not db: missing.append("db")
+# ---------- Sección 1: Entorno y versiones ----------
+def check_environment():
+    import importlib
+    required: List[Tuple[str, str]] = [
+        ("streamlit", "1.39.0"),
+        ("sqlalchemy", "2.0.35"),
+        ("pymysql", "1.1.1"),
+        ("pandas", "2.2.3"),
+        ("numpy", "2.1.1"),
+        ("pydeck", "0.9.1"),
+        ("plotly", "5.24.1"),
+        ("streamlit_folium", "0.22.0"),
+        ("pymongo", "4.9.1"),
+        ("python_dotenv", "1.0.1"),  # package es python-dotenv pero módulo es python_dotenv
+    ]
+
+    rows = []
+    for mod, expected in required:
+        try:
+            m = importlib.import_module(mod)
+            ver = getattr(m, "__version__", "desconocida")
+            ok = "OK" if (ver.startswith(expected)) else f"⚠ espera {expected}"
+        except ModuleNotFoundError:
+            ver = "NO INSTALADO"
+            ok = "❌ falta en requirements.txt"
+        rows.append((mod, ver, ok))
+    st.table(rows)
+    st.caption(f"Python {platform.python_version()} | {sys.executable}")
+
+# ---------- Sección 2: Cargar secrets ----------
+def load_secrets():
+    required_keys = ["MYSQL_URL", "MONGO_URL"]
+    missing = [k for k in required_keys if k not in st.secrets]
     if missing:
-        st.error(f"❌ Falta configurar Secrets de MySQL: {', '.join(missing)}.\n"
-                 "Ve a Manage app → Settings → Secrets y define [mysql].")
-        st.stop()
+        raise RuntimeError(
+            f"Faltan secrets: {missing}. Crea .streamlit/secrets.toml con, por ejemplo:\n"
+            'MYSQL_URL = "mysql+pymysql://user:pass@host:3306/db"\n'
+            'MONGO_URL = "mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true&w=majority"\n'
+            'MAPBOX_API_KEY = "opcional"'
+        )
 
-    # 2) Construye URL segura
-    url = URL.create("mysql+pymysql", username=user, password=pwd,
-                     host=host, port=port, database=db, query={"charset":"utf8mb4"})
-    # 3) SSL opcional
-    ssl_flag = (st.secrets.get("mysql", {}).get("ssl", "false") or os.getenv("MYSQL_SSL", "false")).lower()
-    connect_args = {"ssl": {}} if ssl_flag in ("true","1") else {}
+# ---------- Sección 3: Probar MySQL ----------
+def test_mysql():
+    from sqlalchemy import create_engine, text
+    mysql_url = st.secrets["MYSQL_URL"]
+    engine = create_engine(mysql_url, pool_pre_ping=True, pool_recycle=1800)
+    with engine.connect() as conn:
+        st.write("Ping:", conn.execute(text("SELECT 1")).scalar())
+        # Si quieres listar tablas (PlanetScale/MySQL):
+        res = conn.execute(text("SHOW TABLES"))
+        st.write("Tablas:", [r[0] for r in res.fetchall()[:20]])
 
-    eng = create_engine(url, pool_pre_ping=True, pool_recycle=1800, connect_args=connect_args)
-    try:
-        with eng.connect() as c:
-            c.execute(text("SELECT 1"))
-        return eng
-    except Exception as e:
-        st.error(f"❌ No pude conectar a MySQL (host={host}, db={db}, ssl={'ON' if connect_args else 'OFF'}).\n\n{type(e).__name__}: {e}")
-        st.stop()
+# ---------- Sección 4: Probar MongoDB ----------
+def test_mongo():
+    from pymongo import MongoClient
+    client = MongoClient(st.secrets["MONGO_URL"], serverSelectionTimeoutMS=3000)
+    client.admin.command("ping")
+    db_names = client.list_database_names()
+    st.write("Bases Mongo (primeras):", db_names[:10])
 
-ENG = get_engine()
+# ---------- Sección 5: Demo UI segura (no depende de DB) ----------
+def demo_ui():
+    import pandas as pd
+    import numpy as np
+    st.markdown("Prueba de UI (gráfico y tabla) para confirmar que la app renderiza correctamente.")
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range(end=pd.Timestamp.utcnow(), periods=24, freq="h"),
+            "oxigeno": np.random.normal(8.5, 0.8, 24),
+            "ph": np.random.normal(8.0, 0.2, 24),
+            "temperatura": np.random.normal(22.0, 1.5, 24),
+        }
+    )
+    st.line_chart(df.set_index("timestamp")[["oxigeno", "ph", "temperatura"]])
+    st.dataframe(df.tail(10), use_container_width=True)
 
-# ---------- Helpers seguros (no revientan la app) ----------
-def safe_sql(sql: str, params: Dict[str, Any] | None = None) -> pd.DataFrame:
-    try:
-        return pd.read_sql(text(sql), ENG, params=params)
-    except Exception as e:
-        st.error(f"❌ Error SQL: {type(e).__name__}: {e}\n\nQuery:\n{sql}")
-        return pd.DataFrame()
+# ---------- Sidebar: controles rápidos ----------
+with st.sidebar:
+    st.header("Diagnóstico")
+    run_env = st.checkbox("Entorno y versiones", value=True)
+    run_secrets = st.checkbox("Cargar secrets", value=True)
+    run_mysql = st.checkbox("Probar MySQL", value=True)
+    run_mongo = st.checkbox("Probar MongoDB", value=True)
+    run_demo = st.checkbox("Render UI demo", value=True)
 
-@st.cache_data(ttl=300)
-def q_biorreactores() -> pd.DataFrame:
-    return safe_sql("""
-      SELECT id, cliente, numero_bim, latitud, longitud, altura_bim, tipo_microalga,
-             uso_luz_artificial, tipo_aireador, `fecha_instalación` AS fecha_instalacion
-      FROM biorreactores ORDER BY cliente, numero_bim
-    """)
+    st.divider()
+    st.caption("Sugerencia: ejecuta con logs verbosos en la terminal:")
+    st.code("streamlit run app.py --logger.level=debug", language="bash")
 
-@st.cache_data(ttl=300)
-def q_registros(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
-    return safe_sql("""
-      SELECT r.id, r.usuario_id, r.BIM, r.respuestaGPT, r.HEX, r.fecha
-      FROM registros r
-      WHERE r.BIM = :bim AND r.fecha BETWEEN :d1 AND :d2
-      ORDER BY r.fecha DESC
-    """, {"bim": bim, "d1": d1, "d2": d2})
+st.title("BIM Dashboard — Diagnóstico rápido")
 
-@st.cache_data(ttl=300)
-def q_diagnosticos(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
-    return safe_sql("""
-      SELECT d.id, d.usuario_id, d.PreguntaCliente, d.respuestaGPT, d.fecha
-      FROM diagnosticos d
-      WHERE d.usuario_id IN (SELECT r.usuario_id FROM registros r WHERE r.BIM = :bim)
-        AND d.fecha BETWEEN :d1 AND :d2
-      ORDER BY d.fecha DESC
-    """, {"bim": bim, "d1": d1, "d2": d2})
+# ---------- Ejecución ordenada ----------
+if run_env:
+    run_section("Entorno y versiones", check_environment)
 
-@st.cache_data(ttl=300)
-def q_fechas_bims(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
-    return safe_sql("""
-      SELECT id, numero_bim, nombre_evento, fecha, comentarios
-      FROM fechas_BIMs
-      WHERE numero_bim = :bim AND fecha BETWEEN :d1 AND :d2
-      ORDER BY fecha DESC
-    """, {"bim": bim, "d1": d1, "d2": d2})
+if run_secrets:
+    run_section("Cargar secrets", load_secrets)
 
-# ---------- Estado UI ----------
-if "bim_sel" not in st.session_state:
-    st.session_state.bim_sel = None
-if "cliente_sel" not in st.session_state:
-    st.session_state.cliente_sel = None
+if run_mysql:
+    run_section("Probar conexión MySQL", test_mysql)
 
-# ---------- Vista selector de BIMs ----------
-if st.session_state.bim_sel is None:
-    st.title("🧪 BIMs — Selecciona uno")
-    df_bims = q_biorreactores()
-    if df_bims.empty:
-        st.info("No hay biorreactores para mostrar.")
-        st.stop()
+if run_mongo:
+    run_section("Probar conexión MongoDB", test_mongo)
 
-    # Filtro por cliente (si quieres)
-    clientes = ["(Todos)"] + sorted(df_bims["cliente"].dropna().unique().tolist())
-    cli = st.selectbox("Cliente", clientes)
-    st.session_state.cliente_sel = None if cli == "(Todos)" else cli
-    data = df_bims if st.session_state.cliente_sel is None else df_bims[df_bims["cliente"] == st.session_state.cliente_sel]
+if run_demo:
+    run_section("Render UI demo", demo_ui)
 
-    # Tarjetas
-    for cliente, grp in data.groupby("cliente"):
-        st.subheader(f"👤 {cliente}")
-        cols = st.columns(3)
-        i = 0
-        for _, r in grp.iterrows():
-            with cols[i % 3]:
-                label = f"🧩 BIM {int(r['numero_bim'])}\n\nMicroalga: {r.get('tipo_microalga','-')}"
-                if st.button(label, key=f"bim_{r['numero_bim']}"):
-                    st.session_state.bim_sel = int(r["numero_bim"])
-                    st.experimental_rerun()
-            i += 1
-
-# ---------- Vista detalle del BIM ----------
-else:
-    bim = st.session_state.bim_sel
-    st.markdown(f"### 🔹 BIM {bim}  {'— ' + st.session_state.cliente_sel if st.session_state.cliente_sel else ''}")
-    st.button("⬅️ Volver", on_click=lambda: st.session_state.update({"bim_sel": None}))
-
-    hoy = datetime.utcnow().date()
-    d1 = st.date_input("Desde", hoy - timedelta(days=30))
-    d2 = st.date_input("Hasta", hoy)
-    D1 = datetime.combine(d1, datetime.min.time())
-    D2 = datetime.combine(d2, datetime.max.time())
-
-    T1, T2, T3 = st.tabs(["📊 Registros", "💬 Diagnósticos", "📅 Fechas BIMs"])
-
-    with T1:
-        regs = q_registros(bim, D1, D2)
-        st.metric("Registros", len(regs))
-        st.dataframe(regs, use_container_width=True)
-        if not regs.empty:
-            st.download_button("📥 CSV", regs.to_csv(index=False).encode("utf-8"), file_name=f"registros_BIM{bim}.csv")
-
-    with T2:
-        diags = q_diagnosticos(bim, D1, D2)
-        st.metric("Diagnósticos", len(diags))
-        st.dataframe(diags, use_container_width=True)
-        if not diags.empty:
-            st.download_button("📥 CSV", diags.to_csv(index=False).encode("utf-8"), file_name=f"diagnosticos_BIM{bim}.csv")
-
-    with T3:
-        fb = q_fechas_bims(bim, D1, D2)
-        st.metric("Eventos", len(fb))
-        st.dataframe(fb, use_container_width=True)
-        if not fb.empty:
-            st.download_button("📥 CSV", fb.to_csv(index=False).encode("utf-8"), file_name=f"eventos_BIM{bim}.csv")
-
-st.caption("© Technolab — Visual BIMs (con diagnóstico en pantalla de errores).")
+st.success("Listo. Activa/desactiva bloques en la barra lateral para aislar el error.")
+st.caption("Si una sección falla verás el traceback completo arriba. Copia ese error y te paso el fix exacto.")
