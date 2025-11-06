@@ -1,212 +1,196 @@
-# app.py
-import os
 import streamlit as st
 import pandas as pd
-from datetime import timedelta
+from sqlalchemy import create_engine
 import plotly.express as px
 import pydeck as pdk
-from sqlalchemy import create_engine
-import pymysql
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Technolab Dashboard", page_icon="🧪", layout="wide")
+# ======================================
+# CONFIGURACIÓN BÁSICA
+# ======================================
+st.set_page_config(
+    page_title="Technolab Data Center",
+    page_icon="🧪",
+    layout="wide"
+)
 
-# -----------------------
-# 1) Obtener credenciales
-# -----------------------
-# Primero intentar leer desde variables de entorno (recomendado en deploys)
-MYSQL_HOST = os.environ.get("TECHNOLAB_MYSQL_HOST")
-MYSQL_PORT = os.environ.get("TECHNOLAB_MYSQL_PORT", "3306")
-MYSQL_USER = os.environ.get("TECHNOLAB_MYSQL_USER")
-MYSQL_PASSWORD = os.environ.get("TECHNOLAB_MYSQL_PASSWORD")
-MYSQL_DB = os.environ.get("TECHNOLAB_MYSQL_DB")
+# ======================================
+# CONEXIÓN DIRECTA A MYSQL (DigitalOcean)
+# ======================================
+engine = create_engine(
+    "mysql+pymysql://makeuser:NUEVA_PASSWORD_SEGURA@143.198.144.39:3306/technolab",
+    pool_pre_ping=True
+)
 
-# Si no están en variables de entorno, intentar leer desde st.secrets (Streamlit Cloud / .streamlit/secrets.toml)
-if not (MYSQL_HOST and MYSQL_USER and MYSQL_PASSWORD and MYSQL_DB):
-    mysql_secrets = st.secrets.get("mysql", {}) if hasattr(st, "secrets") else {}
-    MYSQL_HOST = MYSQL_HOST or mysql_secrets.get("host")
-    MYSQL_PORT = MYSQL_PORT or mysql_secrets.get("port", "3306")
-    MYSQL_USER = MYSQL_USER or mysql_secrets.get("user")
-    MYSQL_PASSWORD = MYSQL_PASSWORD or mysql_secrets.get("password")
-    MYSQL_DB = MYSQL_DB or mysql_secrets.get("database")
-
-# Si aún no están, mostrar instrucción y detener ejecución
-if not (MYSQL_HOST and MYSQL_USER and MYSQL_PASSWORD and MYSQL_DB):
-    st.error(
-        "No se han proporcionado credenciales MySQL.\n\n"
-        "Proporciona las credenciales mediante 1) variables de entorno (recomendado) "
-        "o 2) Streamlit secrets (.streamlit/secrets.toml o la interfaz 'Settings → Secrets').\n\n"
-        "Variables de entorno esperadas (ejemplo):\n"
-        "  TECHNOLAB_MYSQL_HOST\n  TECHNOLAB_MYSQL_PORT (opcional, default 3306)\n"
-        "  TECHNOLAB_MYSQL_USER\n  TECHNOLAB_MYSQL_PASSWORD\n  TECHNOLAB_MYSQL_DB\n\n"
-        "O en Streamlit secrets con el bloque [mysql] (host,user,password,database)."
-    )
-    st.stop()
-
-# -----------------------
-# 2) Crear engine SQLAlchemy
-# -----------------------
-conn_str = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}"
-@st.cache_resource(show_spinner=False)
-def get_engine(connection_string: str):
-    return create_engine(connection_string, pool_pre_ping=True)
-
-engine = get_engine(conn_str)
-
-# -----------------------
-# 3) Cargar datos (solo MySQL)
-# -----------------------
+# ======================================
+# CARGA DE DATOS
+# ======================================
 @st.cache_data(show_spinner=False)
 def load_data():
-    # Ajusta las consultas a tu esquema real (nombres de tablas/columnas)
-    clientes = pd.read_sql("SELECT id AS cliente_id, nombre, telefono, email FROM clientes", engine)
-    bims = pd.read_sql("SELECT id AS bim_id, nombre, cliente_id, microalga, sistema, lat, lon FROM bims", engine)
-    registros = pd.read_sql(
-        "SELECT bim_id, timestamp, ph, temperatura, oxigeno, luz, fase FROM registros",
-        engine,
-        parse_dates=["timestamp"]
-    )
-    diagnosticos = pd.read_sql("SELECT bim_id, fecha, resumen FROM diagnosticos", engine, parse_dates=["fecha"])
-    return clientes, bims, registros, diagnosticos
+    clientes = pd.read_sql("SELECT * FROM clientes", engine)
+    biorreactores = pd.read_sql("SELECT * FROM biorreactores", engine)
+    fechas_bims = pd.read_sql("SELECT * FROM fechas_BIMs", engine)
+    diagnosticos = pd.read_sql("SELECT * FROM diagnosticos", engine)
+    registros = pd.read_sql("SELECT * FROM registros", engine)
+    return clientes, biorreactores, fechas_bims, diagnosticos, registros
 
-try:
-    clientes, bims, registros, diagnosticos = load_data()
-except Exception as e:
-    st.error(f"Error leyendo datos desde MySQL: {e}")
-    st.stop()
+clientes, biorreactores, fechas_bims, diagnosticos, registros = load_data()
 
-# -----------------------
-# 4) Sidebar - filtros
-# -----------------------
-st.sidebar.title("Filtros")
+# ======================================
+# SIDEBAR: FILTROS
+# ======================================
+st.sidebar.title("🎛️ Filtros de visualización")
 
-cliente_opciones = ["Todos"] + sorted(clientes["nombre"].unique().tolist())
-cliente_sel = st.sidebar.selectbox("Cliente", cliente_opciones, index=0)
+clientes_lista = sorted(clientes["cliente"].dropna().unique().tolist())
+cliente_sel = st.sidebar.selectbox("👤 Cliente", ["Todos"] + clientes_lista)
 
 if cliente_sel != "Todos":
-    cliente_ids = clientes.loc[clientes["nombre"] == cliente_sel, "cliente_id"].tolist()
-    bims_disp = bims[bims["cliente_id"].isin(cliente_ids)].copy()
+    bims_cliente = biorreactores[biorreactores["cliente"] == cliente_sel]["numero_bim"].unique().tolist()
 else:
-    bims_disp = bims.copy()
+    bims_cliente = sorted(biorreactores["numero_bim"].unique().tolist())
 
-micro_sel = st.sidebar.multiselect("Microalga", sorted(bims_disp["microalga"].dropna().unique().tolist()))
-sis_sel = st.sidebar.multiselect("Sistema", sorted(bims_disp["sistema"].dropna().unique().tolist()))
+bim_sel = st.sidebar.selectbox("🧫 BIM", ["Todos"] + [str(x) for x in bims_cliente])
 
-if registros.empty:
-    st.warning("No hay registros en la base de datos.")
-    st.stop()
-
-max_ts = pd.to_datetime(registros["timestamp"]).max()
-default_start = max_ts - pd.Timedelta(days=7)
-rango = st.sidebar.date_input("Fecha (inicio, fin)", value=(default_start.date(), max_ts.date()))
+rango = st.sidebar.date_input(
+    "📆 Rango de fechas",
+    value=(datetime.today() - timedelta(days=30), datetime.today())
+)
 if isinstance(rango, tuple) and len(rango) == 2:
-    start_date = pd.to_datetime(rango[0])
-    end_date = pd.to_datetime(rango[1]) + pd.Timedelta(days=1)
+    start_date, end_date = pd.to_datetime(rango[0]), pd.to_datetime(rango[1]) + timedelta(days=1)
 else:
-    start_date, end_date = default_start, max_ts + pd.Timedelta(days=1)
+    start_date, end_date = datetime.today() - timedelta(days=30), datetime.today()
 
-if micro_sel:
-    bims_disp = bims_disp[bims_disp["microalga"].isin(micro_sel)]
-if sis_sel:
-    bims_disp = bims_disp[bims_disp["sistema"].isin(sis_sel)]
+# ======================================
+# APLICAR FILTROS
+# ======================================
+biorreactores_f = biorreactores.copy()
+fechas_f = fechas_bims.copy()
+diag_f = diagnosticos.copy()
+reg_f = registros.copy()
 
-# -----------------------
-# 5) Mostrar BIMs (botones)
-# -----------------------
-st.markdown("## BIMs")
-cols = st.columns(3, gap="large")
+if cliente_sel != "Todos":
+    biorreactores_f = biorreactores_f[biorreactores_f["cliente"] == cliente_sel]
+    fechas_f = fechas_f.merge(biorreactores_f[["numero_bim"]], on="numero_bim", how="inner")
+    diag_f = diag_f.merge(clientes[clientes["cliente"] == cliente_sel][["usuario_id"]], on="usuario_id", how="inner")
+    reg_f = reg_f.merge(clientes[clientes["cliente"] == cliente_sel][["usuario_id"]], on="usuario_id", how="inner")
 
-def bim_card(col, row):
-    with col:
-        c = st.container()
+if bim_sel != "Todos":
+    biorreactores_f = biorreactores_f[biorreactores_f["numero_bim"].astype(str) == bim_sel]
+    fechas_f = fechas_f[fechas_f["numero_bim"].astype(str) == bim_sel]
+    reg_f = reg_f[reg_f["BIM"].astype(str) == bim_sel]
+
+fechas_f = fechas_f[(fechas_f["fecha"] >= start_date) & (fechas_f["fecha"] < end_date)]
+diag_f = diag_f[(diag_f["fecha"] >= start_date) & (diag_f["fecha"] < end_date)]
+reg_f = reg_f[(reg_f["fecha"] >= start_date) & (reg_f["fecha"] < end_date)]
+
+# ======================================
+# ENCABEZADO
+# ======================================
+st.markdown("""
+# 🧪 Technolab Data Center  
+Visualizador de clientes, BIMs y diagnósticos automáticos.
+""")
+
+# ======================================
+# TARJETAS DE BIMS
+# ======================================
+st.markdown("### 🧫 Biorreactores disponibles")
+
+cols = st.columns(3)
+for i, (_, row) in enumerate(biorreactores_f.iterrows()):
+    with cols[i % 3]:
+        c = st.container(border=True)
         with c:
-            st.markdown(f"### {row['nombre']}")
-            st.caption(f"Microalga: {row['microalga']} · Sistema: {row['sistema']}")
-            st.caption(f"Cliente ID: {row['cliente_id']}")
-            if st.button("Abrir", key=f"open_{int(row['bim_id'])}"):
-                st.session_state['selected_bim_id'] = int(row['bim_id'])
+            st.markdown(f"### 🧬 BIM #{row['numero_bim']}")
+            st.markdown(f"**Cliente:** {row['cliente']}")
+            st.markdown(f"**Microalga:** {row['tipo_microalga']}")
+            st.markdown(f"**Instalado:** {row['fecha_instalación']}")
+            if st.button("🔍 Ver detalles", key=f"bim_{row['numero_bim']}"):
+                st.session_state["bim_actual"] = row["numero_bim"]
 
-if bims_disp.empty:
-    st.info("No hay BIMs para los filtros seleccionados.")
-else:
-    for i, (_, row) in enumerate(bims_disp.iterrows()):
-        bim_card(cols[i % 3], row)
+if "bim_actual" not in st.session_state:
+    if not biorreactores_f.empty:
+        st.session_state["bim_actual"] = biorreactores_f.iloc[0]["numero_bim"]
 
-if 'selected_bim_id' not in st.session_state and not bims_disp.empty:
-    st.session_state['selected_bim_id'] = int(bims_disp.iloc[0]['bim_id'])
+bim_actual = st.session_state["bim_actual"]
 
-selected_bim_id = st.session_state.get('selected_bim_id')
+# ======================================
+# DETALLE DEL BIM
+# ======================================
+bior = biorreactores[biorreactores["numero_bim"] == bim_actual].iloc[0]
+st.markdown(f"## 🧫 Detalles del BIM #{bim_actual}")
 
-# -----------------------
-# 6) Detalle BIM
-# -----------------------
-if selected_bim_id is not None and not bims_disp.empty:
-    bim_info = bims[bims['bim_id'] == selected_bim_id].iloc[0]
-    st.markdown(f"## Detalle {bim_info['nombre']}")
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🧬 Datos del Biorreactor",
+    "📅 Eventos BIM",
+    "💬 Diagnósticos GPT",
+    "📄 Registros GPT/Make"
+])
 
-    reg_bim = registros[
-        (registros["bim_id"] == selected_bim_id)
-        & (registros["timestamp"] >= start_date)
-        & (registros["timestamp"] < end_date)
-    ].copy()
+# ---------- TAB 1 ----------
+with tab1:
+    st.subheader("📋 Información técnica")
+    st.markdown(f"""
+    **Cliente:** {bior['cliente']}  
+    **Tipo de microalga:** {bior['tipo_microalga']}  
+    **Aireador:** {bior['tipo_aireador']}  
+    **Luz artificial:** {'Sí' if bior['uso_luz_artificial'] else 'No'}  
+    **Altura:** {bior['altura_bim']} m  
+    **Fecha instalación:** {bior['fecha_instalación']}  
+    """)
+    if pd.notnull(bior["latitud"]) and pd.notnull(bior["longitud"]):
+        st.pydeck_chart(pdk.Deck(
+            map_style="mapbox://styles/mapbox/light-v9",
+            initial_view_state=pdk.ViewState(
+                latitude=bior["latitud"],
+                longitude=bior["longitud"],
+                zoom=12,
+                pitch=45
+            ),
+            layers=[
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    data=pd.DataFrame([{
+                        "lat": bior["latitud"],
+                        "lon": bior["longitud"]
+                    }]),
+                    get_position='[lon, lat]',
+                    get_radius=60,
+                    get_color='[0, 150, 200, 200]'
+                )
+            ]
+        ))
+    else:
+        st.info("🌍 Este BIM no tiene coordenadas registradas.")
 
-    diag_bim = diagnosticos[
-        (diagnosticos["bim_id"] == selected_bim_id)
-        & (diagnosticos["fecha"] >= start_date)
-        & (diagnosticos["fecha"] < end_date)
-    ].copy()
+# ---------- TAB 2 ----------
+with tab2:
+    st.subheader("📅 Eventos asociados")
+    if not fechas_f.empty:
+        st.dataframe(fechas_f.sort_values("fecha", ascending=False), use_container_width=True)
+    else:
+        st.info("No hay eventos registrados en este rango.")
 
-    m1, m2, m3, m4 = st.columns(4)
-    with m1: st.metric("pH medio", f"{reg_bim['ph'].mean():.2f}" if not reg_bim.empty else "–")
-    with m2: st.metric("Temp media (°C)", f"{reg_bim['temperatura'].mean():.1f}" if not reg_bim.empty else "–")
-    with m3: st.metric("O₂ medio (mg/L)", f"{reg_bim['oxigeno'].mean():.2f}" if not reg_bim.empty else "–")
-    with m4: st.metric("Lux medio", f"{reg_bim['luz'].mean():.0f}" if not reg_bim.empty else "–")
+# ---------- TAB 3 ----------
+with tab3:
+    st.subheader("💬 Diagnósticos automáticos (GPT)")
+    if not diag_f.empty:
+        st.dataframe(
+            diag_f.sort_values("fecha", ascending=False)[["PreguntaCliente", "respuestaGPT", "fecha"]],
+            use_container_width=True, height=420
+        )
+    else:
+        st.info("Sin diagnósticos en el rango seleccionado.")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Tendencias", "🧪 Diagnóstico", "📋 Registros", "🗺️ Mapa"])
+# ---------- TAB 4 ----------
+with tab4:
+    st.subheader("📄 Registros GPT / Make")
+    if not reg_f.empty:
+        st.dataframe(
+            reg_f.sort_values("fecha", ascending=False)[["BIM", "respuestaGPT", "HEX", "fecha"]],
+            use_container_width=True, height=420
+        )
+    else:
+        st.info("Sin registros disponibles.")
 
-    with tab1:
-        st.subheader("Tendencias de sensores")
-        colv = st.multiselect("Variables", ["ph", "temperatura", "oxigeno", "luz"], default=["oxigeno", "ph"])
-        if not reg_bim.empty:
-            for v in colv:
-                fig = px.line(reg_bim, x="timestamp", y=v, title=v.capitalize())
-                st.plotly_chart(fig, use_container_width=True)
-            if "fase" in reg_bim.columns:
-                fcount = reg_bim.groupby(["fase"]).size().reset_index(name="horas")
-                bar = px.bar(fcount, x="fase", y="horas", title="Distribución de horas por fase")
-                st.plotly_chart(bar, use_container_width=True)
-        else:
-            st.info("No hay registros en el rango seleccionado.")
-
-    with tab2:
-        st.subheader("Diagnóstico (resumen diario)")
-        if not diag_bim.empty:
-            st.dataframe(diag_bim.sort_values("fecha", ascending=False), use_container_width=True)
-        else:
-            st.info("Sin diagnósticos en el rango.")
-
-    with tab3:
-        st.subheader("Registros (detalle)")
-        st.dataframe(reg_bim.sort_values("timestamp", ascending=False), use_container_width=True, height=420)
-
-    with tab4:
-        st.subheader("Ubicación del BIM")
-        lat, lon = bim_info.get("lat"), bim_info.get("lon")
-        if pd.notnull(lat) and pd.notnull(lon):
-            layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=pd.DataFrame([{"lat": lat, "lon": lon}]),
-                get_position='[lon, lat]',
-                get_radius=50,
-                pickable=True
-            )
-            st.pydeck_chart(pdk.Deck(
-                map_style=None,
-                initial_view_state=pdk.ViewState(latitude=lat, longitude=lon, zoom=12, pitch=0),
-                layers=[layer]
-            ))
-        else:
-            st.info("Sin coordenadas para este BIM.")
-else:
-    st.info("Selecciona un BIM para ver el detalle.")
-
-st.caption("Technolab · Dashboard · Fuente: MySQL (Forms · WhatsApp · Make).")
+st.caption("🧠 Technolab · Panel de Control Integrado · Datos recolectados por Make y WhatsApp.")
