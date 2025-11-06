@@ -1,24 +1,21 @@
-# app.py — Technolab Dashboard (versión mejorada visual)
+# app.py — Technolab Dashboard (versión final con conexión directa)
 import os
 from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL
 
 # ==========================================================
-# CONFIGURACIÓN INICIAL Y ESTILO
+# CONFIGURACIÓN INICIAL
 # ==========================================================
 st.set_page_config(page_title="Technolab Dashboard", page_icon="🧪", layout="wide")
 
+# -------- Estilos visuales --------
 st.markdown("""
 <style>
 #MainMenu, header, footer {visibility: hidden;}
 div[data-testid="stMetricValue"] {
   font-size: 26px; font-weight: bold; color: #004B7F;
-}
-div[data-testid="stMetricDelta"] {
-  color: #007ACC !important;
 }
 div.stButton > button {
   border-radius: 16px; background:#004B7F; color:#fff;
@@ -29,85 +26,57 @@ div.stButton > button:hover { background:#007ACC; transform:scale(1.03); }
 """, unsafe_allow_html=True)
 
 # ==========================================================
-# CONEXIÓN MYSQL SEGURA (como en tu versión original)
+# 🔗 CONEXIÓN DIRECTA A MYSQL (DigitalOcean)
 # ==========================================================
-def get_engine():
-    missing = []
-    host = st.secrets.get("mysql", {}).get("host") or os.getenv("MYSQL_HOST")
-    user = st.secrets.get("mysql", {}).get("user") or os.getenv("MYSQL_USER")
-    pwd  = st.secrets.get("mysql", {}).get("password") or os.getenv("MYSQL_PASSWORD")
-    db   = st.secrets.get("mysql", {}).get("db") or os.getenv("MYSQL_DB")
-    port = int(st.secrets.get("mysql", {}).get("port", os.getenv("MYSQL_PORT", 3306)))
-    if not host: missing.append("host")
-    if not user: missing.append("user")
-    if pwd is None: missing.append("password")
-    if not db: missing.append("db")
-    if missing:
-        st.error(f"❌ Falta configurar Secrets de MySQL: {', '.join(missing)}.\n"
-                 "Ve a Manage app → Settings → Secrets y define [mysql].")
-        st.stop()
-
-    url = URL.create("mysql+pymysql", username=user, password=pwd,
-                     host=host, port=port, database=db, query={"charset":"utf8mb4"})
-    ssl_flag = (st.secrets.get("mysql", {}).get("ssl", "false") or os.getenv("MYSQL_SSL", "false")).lower()
-    connect_args = {"ssl": {}} if ssl_flag in ("true","1") else {}
-
-    eng = create_engine(url, pool_pre_ping=True, pool_recycle=1800, connect_args=connect_args)
-    try:
-        with eng.connect() as c:
-            c.execute(text("SELECT 1"))
-        return eng
-    except Exception as e:
-        st.error(f"❌ No pude conectar a MySQL (host={host}, db={db}).\n\n{type(e).__name__}: {e}")
-        st.stop()
-
-ENG = get_engine()
+try:
+    engine = create_engine(
+        "mysql+pymysql://makeuser:NUEVA_PASSWORD_SEGURA@143.198.144.39:3306/technolab?charset=utf8mb4",
+        pool_pre_ping=True, pool_recycle=1800
+    )
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+except Exception as e:
+    st.error(f"❌ Error al conectar con MySQL: {type(e).__name__}: {e}")
+    st.stop()
 
 # ==========================================================
-# HELPERS (no revientan la app)
+# FUNCIONES DE CONSULTA (con cache)
 # ==========================================================
-def safe_sql(sql: str, params: dict | None = None) -> pd.DataFrame:
-    try:
-        return pd.read_sql(text(sql), ENG, params=params)
-    except Exception as e:
-        st.error(f"❌ Error SQL: {type(e).__name__}: {e}\n\nQuery:\n{sql}")
-        return pd.DataFrame()
-
 @st.cache_data(ttl=300)
 def q_biorreactores() -> pd.DataFrame:
-    return safe_sql("""
+    return pd.read_sql("""
         SELECT id, cliente, numero_bim, latitud, longitud, altura_bim, tipo_microalga,
                uso_luz_artificial, tipo_aireador, `fecha_instalación` AS fecha_instalacion
         FROM biorreactores ORDER BY cliente, numero_bim
-    """)
+    """, engine)
 
 @st.cache_data(ttl=300)
 def q_registros(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
-    return safe_sql("""
+    return pd.read_sql(text("""
         SELECT id, usuario_id, BIM, respuestaGPT, HEX, fecha
         FROM registros
         WHERE BIM = :bim AND fecha BETWEEN :d1 AND :d2
         ORDER BY fecha DESC
-    """, {"bim": bim, "d1": d1, "d2": d2})
+    """), engine, params={"bim": bim, "d1": d1, "d2": d2})
 
 @st.cache_data(ttl=300)
 def q_diagnosticos(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
-    return safe_sql("""
+    return pd.read_sql(text("""
         SELECT d.id, d.usuario_id, d.PreguntaCliente, d.respuestaGPT, d.fecha
         FROM diagnosticos d
         WHERE d.usuario_id IN (SELECT r.usuario_id FROM registros r WHERE r.BIM = :bim)
           AND d.fecha BETWEEN :d1 AND :d2
         ORDER BY d.fecha DESC
-    """, {"bim": bim, "d1": d1, "d2": d2})
+    """), engine, params={"bim": bim, "d1": d1, "d2": d2})
 
 @st.cache_data(ttl=300)
 def q_fechas_bims(bim: int, d1: datetime, d2: datetime) -> pd.DataFrame:
-    return safe_sql("""
+    return pd.read_sql(text("""
         SELECT id, numero_bim, nombre_evento, fecha, comentarios
         FROM fechas_BIMs
         WHERE numero_bim = :bim AND fecha BETWEEN :d1 AND :d2
         ORDER BY fecha DESC
-    """, {"bim": bim, "d1": d1, "d2": d2})
+    """), engine, params={"bim": bim, "d1": d1, "d2": d2})
 
 # ==========================================================
 # ESTADO DE SESIÓN
@@ -118,17 +87,22 @@ if "cliente_sel" not in st.session_state:
     st.session_state.cliente_sel = None
 
 # ==========================================================
-# VISTA PRINCIPAL — PORTADA CON MÉTRICAS GLOBALES
+# VISTA PRINCIPAL — PORTADA
 # ==========================================================
 if st.session_state.bim_sel is None:
     st.title("🧠 Technolab Data Center")
 
     df_bims = q_biorreactores()
+    if df_bims.empty:
+        st.info("No hay biorreactores registrados.")
+        st.stop()
+
+    # Métricas globales
     total_clientes = df_bims["cliente"].nunique()
     total_bims = len(df_bims)
-    total_diag = safe_sql("SELECT COUNT(*) AS c FROM diagnosticos")["c"].iloc[0]
-    total_regs = safe_sql("SELECT COUNT(*) AS c FROM registros")["c"].iloc[0]
-    total_eventos = safe_sql("SELECT COUNT(*) AS c FROM fechas_BIMs")["c"].iloc[0]
+    total_diag = pd.read_sql("SELECT COUNT(*) AS c FROM diagnosticos", engine)["c"].iloc[0]
+    total_regs = pd.read_sql("SELECT COUNT(*) AS c FROM registros", engine)["c"].iloc[0]
+    total_eventos = pd.read_sql("SELECT COUNT(*) AS c FROM fechas_BIMs", engine)["c"].iloc[0]
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("👤 Clientes", total_clientes)
@@ -139,10 +113,6 @@ if st.session_state.bim_sel is None:
 
     st.divider()
     st.subheader("🧫 Selecciona un BIM")
-
-    if df_bims.empty:
-        st.info("No hay biorreactores para mostrar.")
-        st.stop()
 
     clientes = ["(Todos)"] + sorted(df_bims["cliente"].dropna().unique().tolist())
     cli = st.selectbox("Cliente", clientes)
@@ -179,21 +149,21 @@ else:
 
     with T1:
         regs = q_registros(bim, D1, D2)
-        st.metric("Registros", len(regs))
+        st.metric("📄 Registros", len(regs))
         st.dataframe(regs, use_container_width=True)
         if not regs.empty:
             st.download_button("📥 Descargar CSV", regs.to_csv(index=False).encode("utf-8"), file_name=f"registros_BIM{bim}.csv")
 
     with T2:
         diags = q_diagnosticos(bim, D1, D2)
-        st.metric("Diagnósticos", len(diags))
+        st.metric("💬 Diagnósticos", len(diags))
         st.dataframe(diags, use_container_width=True)
         if not diags.empty:
             st.download_button("📥 Descargar CSV", diags.to_csv(index=False).encode("utf-8"), file_name=f"diagnosticos_BIM{bim}.csv")
 
     with T3:
         fb = q_fechas_bims(bim, D1, D2)
-        st.metric("Eventos", len(fb))
+        st.metric("📅 Eventos", len(fb))
         st.dataframe(fb, use_container_width=True)
         if not fb.empty:
             st.download_button("📥 Descargar CSV", fb.to_csv(index=False).encode("utf-8"), file_name=f"eventos_BIM{bim}.csv")
