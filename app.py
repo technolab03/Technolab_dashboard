@@ -79,31 +79,50 @@ def _norm_bim(s: pd.Series) -> pd.Series:
     return s.astype("string").str.strip()
 
 # ==========================================================
-# 📦 CONSULTAS CON CACHE
+# 📦 CONSULTAS CON CACHE (sin joins de texto peligrosos)
 # ==========================================================
 @st.cache_data(ttl=180)
 def get_clientes() -> pd.DataFrame:
-    return q("SELECT id, usuario_id, usuario_nombre, cliente, BIMs_instalados FROM clientes")
+    # Sin COALESCE(''): relleno nulos en Pandas
+    return q("""
+        SELECT id, usuario_id, usuario_nombre, cliente, BIMs_instalados
+        FROM clientes
+    """)
 
 @st.cache_data(ttl=180)
 def get_biorreactores_raw() -> pd.DataFrame:
     return q("""
-        SELECT id, cliente, numero_bim, latitud, longitud, altura_bim,
-               tipo_microalga, uso_luz_artificial, tipo_aireador, `fecha_instalación` AS fecha_instalacion
+        SELECT id,
+               cliente,
+               TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS numero_bim,
+               latitud, longitud, altura_bim,
+               tipo_microalga, uso_luz_artificial, tipo_aireador,
+               `fecha_instalación` AS fecha_instalacion
         FROM biorreactores
         ORDER BY cliente, numero_bim
     """)
 
 @st.cache_data(ttl=180)
 def get_distinct_bims_from_registros() -> pd.DataFrame:
-    return q("SELECT DISTINCT BIM AS numero_bim FROM registros WHERE BIM IS NOT NULL ORDER BY numero_bim")
+    return q("""
+        SELECT DISTINCT TRIM(CAST(BIM AS CHAR CHARACTER SET utf8mb4)) AS numero_bim
+        FROM registros
+        WHERE BIM IS NOT NULL AND TRIM(CAST(BIM AS CHAR CHARACTER SET utf8mb4)) <> ''
+        ORDER BY numero_bim
+    """)
 
 @st.cache_data(ttl=180)
 def get_distinct_bims_from_eventos() -> pd.DataFrame:
-    return q("SELECT DISTINCT numero_bim FROM fechas_BIMs WHERE numero_bim IS NOT NULL ORDER BY numero_bim")
+    return q("""
+        SELECT DISTINCT TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS numero_bim
+        FROM fechas_BIMs
+        WHERE numero_bim IS NOT NULL AND TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) <> ''
+        ORDER BY numero_bim
+    """)
 
 @st.cache_data(ttl=180)
 def get_latest_usuario_por_bim() -> pd.DataFrame:
+    # Solo tablas internas; no hay join de texto
     return q("""
         SELECT r.BIM AS numero_bim, r.usuario_id
         FROM registros r
@@ -113,6 +132,24 @@ def get_latest_usuario_por_bim() -> pd.DataFrame:
             WHERE fecha IS NOT NULL
             GROUP BY BIM
         ) m ON m.BIM = r.BIM AND m.max_fecha = r.fecha
+    """)
+
+# NUEVO: separar registros y clientes por usuario_id (evita JOIN texto en MySQL)
+@st.cache_data(ttl=180)
+def get_registros_usuario_bim() -> pd.DataFrame:
+    return q("""
+        SELECT r.usuario_id,
+               TRIM(CAST(r.BIM AS CHAR CHARACTER SET utf8mb4)) AS bim
+        FROM registros r
+        WHERE r.BIM IS NOT NULL
+    """)
+
+@st.cache_data(ttl=180)
+def get_clientes_usuario() -> pd.DataFrame:
+    return q("""
+        SELECT usuario_id,
+               cliente
+        FROM clientes
     """)
 
 @st.cache_data(ttl=180)
@@ -126,6 +163,7 @@ def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
 
 @st.cache_data(ttl=180)
 def get_diagnosticos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
+    # Usa subconsulta, pero filtramos por usuario_id en Pandas al construir catálogo
     return q("""
         SELECT d.id, d.usuario_id, d.PreguntaCliente, d.respuestaGPT, d.fecha
         FROM diagnosticos d
@@ -144,7 +182,7 @@ def get_registros(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
     """, {"bim": str(bim), "d1": d1, "d2": d2})
 
 # ==========================================================
-# 🧠 CATÁLOGO DE BIMs (fallback si no hay biorreactores)
+# 🧠 CATÁLOGO DE BIMs (merge en Pandas)
 # ==========================================================
 @st.cache_data(ttl=180)
 def construir_catalogo_bims() -> pd.DataFrame:
@@ -152,7 +190,7 @@ def construir_catalogo_bims() -> pd.DataFrame:
     br = get_biorreactores_raw()
 
     if not br.empty:
-        br["cliente"] = _norm_cliente(br["cliente"])
+        br["cliente"] = _norm_cliente(br["cliente"].fillna("(Sin cliente)"))
         br["numero_bim"] = _norm_bim(br["numero_bim"])
         cat = br.copy()
     else:
@@ -164,23 +202,36 @@ def construir_catalogo_bims() -> pd.DataFrame:
                 "cliente","numero_bim","latitud","longitud","altura_bim",
                 "tipo_microalga","uso_luz_artificial","tipo_aireador","fecha_instalacion"
             ])
+
         latest = get_latest_usuario_por_bim()
+        clientes = clientes.copy()
+
+        # Normaliza tipos para merges seguros
+        latest["usuario_id"]   = latest["usuario_id"].astype("string")
+        clientes["usuario_id"] = clientes["usuario_id"].astype("string")
+        clientes["cliente"]    = _norm_cliente(clientes["cliente"].fillna("(Sin cliente)"))
+
         cat = (bims.merge(latest, on="numero_bim", how="left")
                     .merge(clientes[["usuario_id","cliente"]], on="usuario_id", how="left"))
-        cat["cliente"] = _norm_cliente(cat["cliente"].fillna("(Sin cliente)"))
+
+        cat["cliente"]    = _norm_cliente(cat["cliente"].fillna("(Sin cliente)"))
         cat["numero_bim"] = _norm_bim(cat["numero_bim"])
+
+        # columnas técnicas vacías si no existen
         for c in ["tipo_microalga","tipo_aireador","uso_luz_artificial",
                   "altura_bim","latitud","longitud","fecha_instalacion"]:
             if c not in cat.columns:
                 cat[c] = None
+
         cat = cat[["cliente","numero_bim","latitud","longitud","altura_bim",
                    "tipo_microalga","uso_luz_artificial","tipo_aireador","fecha_instalacion"]].copy()
 
+    # deduplicar por (cliente, numero_bim)
     cat = cat.dropna(subset=["numero_bim"]).drop_duplicates(subset=["cliente","numero_bim"])
     return cat
 
 # ==========================================================
-# 📊 KPIs (cálculo en Pandas para evitar UNION/collation mix)
+# 📊 KPIs (todo lo sensible resuelto en Pandas)
 # ==========================================================
 @st.cache_data(ttl=180)
 def get_kpis():
@@ -188,26 +239,44 @@ def get_kpis():
     c = q("SELECT COUNT(*) AS c FROM clientes")
     total_clientes = int(c["c"].iloc[0]) if not c.empty else 0
 
-    # 1) Cliente–BIM desde biorreactores
+    # 1) Cliente–BIM desde biorreactores (sin COALESCE; normalizo en Pandas)
     df_bio = q("""
         SELECT
-          TRIM(CONVERT(cliente USING utf8mb4)) AS cliente,
+          cliente,
           TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim
         FROM biorreactores
         WHERE numero_bim IS NOT NULL
     """)
+    if not df_bio.empty:
+        df_bio["cliente"] = _norm_cliente(df_bio["cliente"].fillna(""))
+        df_bio["bim"]     = _norm_bim(df_bio["bim"].fillna(""))
+        df_bio = df_bio[["cliente","bim"]]
+    else:
+        df_bio = pd.DataFrame(columns=["cliente","bim"])
 
-    # 2) Cliente–BIM desde registros, ENDURO a colación (sin COALESCE, usando CONVERT/CAST)
-    df_reg = q("""
-        SELECT
-          TRIM(CONVERT(c.cliente USING utf8mb4)) AS cliente,
-          TRIM(CAST(r.BIM AS CHAR CHARACTER SET utf8mb4)) AS bim
-        FROM registros r
-        LEFT JOIN clientes c ON c.usuario_id = r.usuario_id
-        WHERE r.BIM IS NOT NULL
-    """)
+    # 2) Cliente–BIM desde registros (merge por usuario_id en Pandas; 0 joins de texto en MySQL)
+    reg = get_registros_usuario_bim()
+    cli = get_clientes_usuario()
 
-    # 3) BIM desde eventos + map a cliente con biorreactores en Python (evita joins de texto en MySQL)
+    if not reg.empty:
+        reg["usuario_id"] = reg["usuario_id"].astype("string")
+        reg["bim"] = _norm_bim(reg["bim"].fillna(""))
+    else:
+        reg = pd.DataFrame(columns=["usuario_id","bim"])
+
+    if not cli.empty:
+        cli["usuario_id"] = cli["usuario_id"].astype("string")
+        cli["cliente"]    = _norm_cliente(cli["cliente"].fillna(""))
+    else:
+        cli = pd.DataFrame(columns=["usuario_id","cliente"])
+
+    df_reg = (
+        reg.merge(cli, on="usuario_id", how="left")
+           .assign(cliente=lambda d: d["cliente"].fillna(""))
+           [["cliente","bim"]]
+    )
+
+    # 3) BIM desde eventos + map a cliente con biorreactores en Python
     df_evt_bim = q("""
         SELECT TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim
         FROM fechas_BIMs
@@ -216,22 +285,21 @@ def get_kpis():
     map_bio = q("""
         SELECT
           TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim,
-          TRIM(CONVERT(cliente USING utf8mb4)) AS cliente
+          cliente
         FROM biorreactores
         WHERE numero_bim IS NOT NULL
     """)
-    df_evt = df_evt_bim.merge(map_bio, on="bim", how="left")
+    if not map_bio.empty:
+        map_bio["cliente"] = _norm_cliente(map_bio["cliente"].fillna(""))
+    df_evt = df_evt_bim.merge(map_bio, on="bim", how="left") if not df_evt_bim.empty else pd.DataFrame(columns=["bim","cliente"])
+    if not df_evt.empty:
+        df_evt["cliente"] = _norm_cliente(df_evt["cliente"].fillna(""))
+        df_evt["bim"]     = _norm_bim(df_evt["bim"].fillna(""))
+        df_evt = df_evt[["cliente","bim"]]
 
-    # Normalización en Pandas
-    def _clean(df):
-        if df.empty:
-            return pd.DataFrame(columns=["cliente","bim"])
-        df["cliente"] = _norm_cliente(df["cliente"].fillna(""))
-        df["bim"] = _norm_bim(df["bim"].fillna(""))
-        df = df[(df["bim"].notna()) & (df["bim"] != "")]
-        return df[["cliente","bim"]]
-
-    df_all = pd.concat([_clean(df_bio), _clean(df_reg), _clean(df_evt)], ignore_index=True)
+    # Unificación y conteo
+    df_all = pd.concat([df_bio, df_reg, df_evt], ignore_index=True)
+    df_all = df_all[(df_all["bim"].notna()) & (df_all["bim"] != "")]
     df_all = df_all.drop_duplicates(subset=["cliente","bim"])
     total_bims = int(len(df_all))
 
