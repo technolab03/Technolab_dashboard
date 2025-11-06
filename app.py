@@ -5,26 +5,19 @@ import plotly.express as px
 import pydeck as pdk
 from datetime import datetime, timedelta
 
-# ======================================
-# CONFIGURACIÓN BÁSICA
-# ======================================
-st.set_page_config(
-    page_title="Technolab Data Center",
-    page_icon="🧪",
-    layout="wide"
-)
+st.set_page_config(page_title="Technolab Data Center", page_icon="🧪", layout="wide")
 
-# ======================================
-# CONEXIÓN DIRECTA A MYSQL (DigitalOcean)
-# ======================================
+# ======================================================
+# 🔗 CONEXIÓN DIRECTA A MYSQL (DigitalOcean)
+# ======================================================
 engine = create_engine(
     "mysql+pymysql://makeuser:NUEVA_PASSWORD_SEGURA@143.198.144.39:3306/technolab",
     pool_pre_ping=True
 )
 
-# ======================================
-# CARGA DE DATOS
-# ======================================
+# ======================================================
+# 📦 CARGA DE DATOS CON CONVERSIÓN DE FECHAS
+# ======================================================
 @st.cache_data(show_spinner=False)
 def load_data():
     clientes = pd.read_sql("SELECT * FROM clientes", engine)
@@ -32,13 +25,20 @@ def load_data():
     fechas_bims = pd.read_sql("SELECT * FROM fechas_BIMs", engine)
     diagnosticos = pd.read_sql("SELECT * FROM diagnosticos", engine)
     registros = pd.read_sql("SELECT * FROM registros", engine)
+
+    # 🔧 Convertir columnas de fecha si existen
+    for df in [fechas_bims, diagnosticos, registros]:
+        if "fecha" in df.columns:
+            df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+
     return clientes, biorreactores, fechas_bims, diagnosticos, registros
+
 
 clientes, biorreactores, fechas_bims, diagnosticos, registros = load_data()
 
-# ======================================
-# SIDEBAR: FILTROS
-# ======================================
+# ======================================================
+# 🎛️ SIDEBAR: FILTROS
+# ======================================================
 st.sidebar.title("🎛️ Filtros de visualización")
 
 clientes_lista = sorted(clientes["cliente"].dropna().unique().tolist())
@@ -60,9 +60,9 @@ if isinstance(rango, tuple) and len(rango) == 2:
 else:
     start_date, end_date = datetime.today() - timedelta(days=30), datetime.today()
 
-# ======================================
-# APLICAR FILTROS
-# ======================================
+# ======================================================
+# 🧮 APLICAR FILTROS
+# ======================================================
 biorreactores_f = biorreactores.copy()
 fechas_f = fechas_bims.copy()
 diag_f = diagnosticos.copy()
@@ -70,53 +70,69 @@ reg_f = registros.copy()
 
 if cliente_sel != "Todos":
     biorreactores_f = biorreactores_f[biorreactores_f["cliente"] == cliente_sel]
-    fechas_f = fechas_f.merge(biorreactores_f[["numero_bim"]], on="numero_bim", how="inner")
-    diag_f = diag_f.merge(clientes[clientes["cliente"] == cliente_sel][["usuario_id"]], on="usuario_id", how="inner")
-    reg_f = reg_f.merge(clientes[clientes["cliente"] == cliente_sel][["usuario_id"]], on="usuario_id", how="inner")
+    if "numero_bim" in fechas_f.columns:
+        fechas_f = fechas_f.merge(biorreactores_f[["numero_bim"]], on="numero_bim", how="inner")
+    if "usuario_id" in diag_f.columns and "usuario_id" in clientes.columns:
+        diag_f = diag_f.merge(clientes[clientes["cliente"] == cliente_sel][["usuario_id"]], on="usuario_id", how="inner")
+    if "usuario_id" in reg_f.columns and "usuario_id" in clientes.columns:
+        reg_f = reg_f.merge(clientes[clientes["cliente"] == cliente_sel][["usuario_id"]], on="usuario_id", how="inner")
 
 if bim_sel != "Todos":
     biorreactores_f = biorreactores_f[biorreactores_f["numero_bim"].astype(str) == bim_sel]
-    fechas_f = fechas_f[fechas_f["numero_bim"].astype(str) == bim_sel]
-    reg_f = reg_f[reg_f["BIM"].astype(str) == bim_sel]
+    if "numero_bim" in fechas_f.columns:
+        fechas_f = fechas_f[fechas_f["numero_bim"].astype(str) == bim_sel]
+    if "BIM" in reg_f.columns:
+        reg_f = reg_f[reg_f["BIM"].astype(str) == bim_sel]
 
-fechas_f = fechas_f[(fechas_f["fecha"] >= start_date) & (fechas_f["fecha"] < end_date)]
-diag_f = diag_f[(diag_f["fecha"] >= start_date) & (diag_f["fecha"] < end_date)]
-reg_f = reg_f[(reg_f["fecha"] >= start_date) & (reg_f["fecha"] < end_date)]
+# 🔧 Filtrado por rango de fechas (solo si columna existe)
+if "fecha" in fechas_f.columns:
+    fechas_f = fechas_f[(fechas_f["fecha"] >= start_date) & (fechas_f["fecha"] < end_date)]
+if "fecha" in diag_f.columns:
+    diag_f = diag_f[(diag_f["fecha"] >= start_date) & (diag_f["fecha"] < end_date)]
+if "fecha" in reg_f.columns:
+    reg_f = reg_f[(reg_f["fecha"] >= start_date) & (reg_f["fecha"] < end_date)]
 
-# ======================================
-# ENCABEZADO
-# ======================================
+# ======================================================
+# 🧠 ENCABEZADO
+# ======================================================
 st.markdown("""
 # 🧪 Technolab Data Center  
 Visualizador de clientes, BIMs y diagnósticos automáticos.
 """)
 
-# ======================================
-# TARJETAS DE BIMS
-# ======================================
-st.markdown("### 🧫 Biorreactores disponibles")
+# ======================================================
+# 🧫 TARJETAS DE BIORREACTORES
+# ======================================================
+st.markdown("### 🧬 Biorreactores disponibles")
 
-cols = st.columns(3)
-for i, (_, row) in enumerate(biorreactores_f.iterrows()):
-    with cols[i % 3]:
-        c = st.container(border=True)
-        with c:
-            st.markdown(f"### 🧬 BIM #{row['numero_bim']}")
-            st.markdown(f"**Cliente:** {row['cliente']}")
-            st.markdown(f"**Microalga:** {row['tipo_microalga']}")
-            st.markdown(f"**Instalado:** {row['fecha_instalación']}")
-            if st.button("🔍 Ver detalles", key=f"bim_{row['numero_bim']}"):
-                st.session_state["bim_actual"] = row["numero_bim"]
+if biorreactores_f.empty:
+    st.info("No hay biorreactores para los filtros seleccionados.")
+else:
+    cols = st.columns(3)
+    for i, (_, row) in enumerate(biorreactores_f.iterrows()):
+        with cols[i % 3]:
+            c = st.container(border=True)
+            with c:
+                st.markdown(f"### 🧫 BIM #{row['numero_bim']}")
+                st.markdown(f"**Cliente:** {row['cliente']}")
+                st.markdown(f"**Microalga:** {row['tipo_microalga']}")
+                st.markdown(f"**Instalado:** {row['fecha_instalación']}")
+                if st.button("🔍 Ver detalles", key=f"bim_{row['numero_bim']}"):
+                    st.session_state["bim_actual"] = row["numero_bim"]
 
+# Selección por defecto
 if "bim_actual" not in st.session_state:
     if not biorreactores_f.empty:
         st.session_state["bim_actual"] = biorreactores_f.iloc[0]["numero_bim"]
 
-bim_actual = st.session_state["bim_actual"]
+bim_actual = st.session_state.get("bim_actual")
 
-# ======================================
-# DETALLE DEL BIM
-# ======================================
+# ======================================================
+# 🧫 DETALLE DEL BIM
+# ======================================================
+if bim_actual is None or bim_actual not in biorreactores["numero_bim"].values:
+    st.stop()
+
 bior = biorreactores[biorreactores["numero_bim"] == bim_actual].iloc[0]
 st.markdown(f"## 🧫 Detalles del BIM #{bim_actual}")
 
