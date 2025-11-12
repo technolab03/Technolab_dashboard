@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (mapa robusto, botón BIM minimalista 🌿)
+# app.py — Technolab Data Center (marcador emoji en mapa, parser coords robusto, botón BIM 🌿)
 # -*- coding: utf-8 -*-
 import os
 import re
@@ -83,19 +83,18 @@ def _norm_bim_series(s: pd.Series) -> pd.Series:
     x = x.str.lower().replace({"none":"", "null":"", "ninguno":""})
     return x
 
-# Parser robusto para coordenadas: toma el PRIMER número con signo y decimales (., ,)
+# Parser robusto para coordenadas: primer número (coma o punto)
+import re
 _coord_pattern = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 def _to_float_coord(val):
     if pd.isna(val):
         return None
     s = str(val).strip()
-    # si viene "lat, lon" en el mismo campo, nos quedamos con el primero
     m = _coord_pattern.search(s)
     if not m:
         return None
-    num = m.group(0).replace(",", ".")
     try:
-        return float(num)
+        return float(m.group(0).replace(",", "."))
     except Exception:
         return None
 
@@ -108,7 +107,6 @@ def get_clientes() -> pd.DataFrame:
 
 @st.cache_data(ttl=180)
 def get_biorreactores() -> pd.DataFrame:
-    # Sin filtrar por cliente para incluir registros sin cliente asignado
     return q("""
         SELECT
            id,
@@ -124,20 +122,15 @@ def get_biorreactores() -> pd.DataFrame:
 @st.cache_data(ttl=180)
 def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     cat = get_biorreactores().copy()
-
-    # Filtrado por cliente si corresponde (sin excluir vacíos cuando se elige "Todos")
     if cliente_sel and cliente_sel != "Todos":
         cat = cat[cat["cliente"].fillna("").str.strip() == cliente_sel]
-
-    # Limpieza robusta de coordenadas (acepta " -29,90 ", "Lat:-29.90", etc.)
     cat["latitud"]  = cat["latitud"].map(_to_float_coord)
     cat["longitud"] = cat["longitud"].map(_to_float_coord)
-
-    # Conserva solo filas que tienen ambos
-    cat = cat.dropna(subset=["latitud", "longitud"])
-    # Etiqueta para mapa
+    cat = cat.dropna(subset=["latitud","longitud"])
     cat["label"] = "BIM " + cat["numero_bim"].astype("string")
-    return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label"]]
+    # emoji como columna
+    cat["icon"] = "🌿"
+    return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon"]]
 
 @st.cache_data(ttl=180)
 def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
@@ -249,25 +242,32 @@ def view_home():
             lat0 = float(df_map["latitud"].mean())
             lon0 = float(df_map["longitud"].mean())
             view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=8, pitch=0)
-            layer_points = pdk.Layer(
-                "ScatterplotLayer",
-                data=df_map,
-                get_position="[longitud, latitud]",
-                get_radius=150,
-                pickable=True,
-                get_fill_color=[0, 148, 255, 160],
-            )
-            layer_labels = pdk.Layer(
+
+            # Capa 1: Emoji grande (tamaño en píxeles, no cambia con el zoom)
+            layer_emoji = pdk.Layer(
                 "TextLayer",
                 data=df_map,
                 get_position="[longitud, latitud]",
-                get_text="label",
-                get_size=14,
-                get_color=[255, 255, 255],
-                get_alignment_baseline="bottom",
+                get_text="icon",          # 🌿
+                get_size=28,              # píxeles
+                get_text_anchor="middle",
+                get_alignment_baseline="bottom"
             )
+
+            # Capa 2: Etiqueta "BIM X" bajo el emoji
+            layer_label = pdk.Layer(
+                "TextLayer",
+                data=df_map,
+                get_position="[longitud, latitud]",
+                get_text="label",         # "BIM 3", etc.
+                get_size=13,
+                get_text_anchor="middle",
+                get_alignment_baseline="top",
+                get_color=[255, 255, 255]
+            )
+
             deck = pdk.Deck(
-                layers=[layer_points, layer_labels],
+                layers=[layer_emoji, layer_label],
                 initial_view_state=view,
                 tooltip={"html": "<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"},
             )
