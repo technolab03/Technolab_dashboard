@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (mapa en página propia + marcadores de tamaño fijo + filtro por agricultor)
+# app.py — Technolab Data Center (marcadores emoji fijos + listado sin info redundante)
 # -*- coding: utf-8 -*-
 import os
 import re
@@ -124,8 +124,8 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     cat["longitud"] = cat["longitud"].map(_to_float_coord)
     cat = cat.dropna(subset=["latitud","longitud"])
     cat["label"] = "BIM " + cat["numero_bim"].astype("string")
-    cat["pin"] = "📍"
-    return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","pin"]]
+    cat["icon"]  = "🌱"   # emoji marcador
+    return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon"]]
 
 @st.cache_data(ttl=180)
 def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
@@ -246,25 +246,10 @@ def view_home():
             cols = st.columns(3)
             for i, (_, r) in enumerate(grp.iterrows()):
                 with cols[i % 3]:
-                    # Botón minimalista
+                    # Botón minimalista (sin info redundante debajo)
                     label_btn = f"🌿 BIM {r['numero_bim']}"
                     if st.button(label_btn, key=f"btn_bim_{cliente or 'sin_cliente'}_{r['numero_bim']}"):
                         go_detail(str(r["numero_bim"]))
-
-                    # Info técnica
-                    tipo_microalga = r.get("tipo_microalga") or "—"
-                    tipo_aireador  = r.get("tipo_aireador") or "—"
-                    altura         = r.get("altura_bim") or "—"
-                    luz            = "Sí" if r.get("uso_luz_artificial") else "No"
-                    fecha          = r.get("fecha_instalacion") or "—"
-
-                    st.markdown(
-                        f"**Microalga:** {tipo_microalga}  \n"
-                        f"**Aireador:** {tipo_aireador}  \n"
-                        f"**Altura:** {altura} m  \n"
-                        f"**Luz artificial:** {luz}  \n"
-                        f"**Instalación:** {fecha}"
-                    )
 
 # ==========================================================
 # Página del mapa (ventana propia)
@@ -288,37 +273,34 @@ def view_map():
     lon0 = float(df_map["longitud"].mean())
     view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=9, pitch=0)
 
-    # Marcadores con tamaño fijo en píxeles (no se achican al alejar)
-    layer_points = pdk.Layer(
-        "ScatterplotLayer",
+    # Marcador: emoji 🌱 (tamaño en píxeles; no cambia con el zoom)
+    layer_emoji = pdk.Layer(
+        "TextLayer",
         data=df_map,
         get_position="[longitud, latitud]",
-        get_radius=6,                 # radio lógico; lo fijamos con min/max pixels
-        radius_min_pixels=10,         # tamaño constante
-        radius_max_pixels=10,         # tamaño constante
-        pickable=True,
-        get_fill_color=[0, 180, 255, 220],
-        stroke=True,
-        get_line_color=[255, 255, 255],
-        line_width_min_pixels=2
+        get_text="icon",           # 🌱
+        get_size=30,               # píxeles (ajusta a gusto)
+        get_text_anchor="middle",
+        get_alignment_baseline="center",
+        pickable=True
     )
 
-    # Etiqueta con emoji + BIM encima del punto (en píxeles también)
-    df_map["title"] = "📍 " + df_map["label"].astype(str)
-    layer_labels = pdk.Layer(
+    # Etiqueta "BIM X" a la derecha del emoji
+    df_map["title"] = df_map["label"].astype(str)
+    layer_label = pdk.Layer(
         "TextLayer",
         data=df_map,
         get_position="[longitud, latitud]",
         get_text="title",
-        get_size=16,                  # px
+        get_size=14,               # píxeles
         get_color=[255, 255, 255],
         get_text_anchor="start",
         get_alignment_baseline="center",
-        get_pixel_offset=[12, 0]      # desplaza texto a la derecha del punto
+        get_pixel_offset=[18, 0]   # separa el texto del emoji
     )
 
     deck = pdk.Deck(
-        layers=[layer_points, layer_labels],
+        layers=[layer_emoji, layer_label],
         initial_view_state=view,
         tooltip={"html": "<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"},
     )
@@ -376,7 +358,7 @@ def view_detail():
             st.info("Sin diagnósticos en el rango indicado.")
         else:
             st.dataframe(df_d, use_container_width=True)
-            st.download_button("Descargar CSV", df_d.to_csv(index=False).encode("utf-8"), file_name=f"diagnosticos_BIM{bim}.csv")
+            st.download_button("Descargar CSV", df_d.to_csv(index=False).encode("utf-8"), file_name=f"diagnósticos_BIM{bim}.csv")
 
     with T3:
         df_e = get_eventos(bim, d1, d2)
