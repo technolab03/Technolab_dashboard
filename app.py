@@ -1,6 +1,7 @@
-# app.py — Technolab Data Center (versión profesional, botón BIM minimalista 🌿)
+# app.py — Technolab Data Center (mapa robusto, botón BIM minimalista 🌿)
 # -*- coding: utf-8 -*-
 import os
+import re
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text, event
@@ -82,6 +83,22 @@ def _norm_bim_series(s: pd.Series) -> pd.Series:
     x = x.str.lower().replace({"none":"", "null":"", "ninguno":""})
     return x
 
+# Parser robusto para coordenadas: toma el PRIMER número con signo y decimales (., ,)
+_coord_pattern = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
+def _to_float_coord(val):
+    if pd.isna(val):
+        return None
+    s = str(val).strip()
+    # si viene "lat, lon" en el mismo campo, nos quedamos con el primero
+    m = _coord_pattern.search(s)
+    if not m:
+        return None
+    num = m.group(0).replace(",", ".")
+    try:
+        return float(num)
+    except Exception:
+        return None
+
 # ==========================================================
 # Consultas con caché
 # ==========================================================
@@ -91,7 +108,7 @@ def get_clientes() -> pd.DataFrame:
 
 @st.cache_data(ttl=180)
 def get_biorreactores() -> pd.DataFrame:
-    # No filtramos por cliente para incluir registros sin cliente asignado
+    # Sin filtrar por cliente para incluir registros sin cliente asignado
     return q("""
         SELECT
            id,
@@ -107,12 +124,18 @@ def get_biorreactores() -> pd.DataFrame:
 @st.cache_data(ttl=180)
 def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     cat = get_biorreactores().copy()
+
+    # Filtrado por cliente si corresponde (sin excluir vacíos cuando se elige "Todos")
     if cliente_sel and cliente_sel != "Todos":
         cat = cat[cat["cliente"].fillna("").str.strip() == cliente_sel]
 
-    cat["latitud"]  = pd.to_numeric(cat["latitud"], errors="coerce")
-    cat["longitud"] = pd.to_numeric(cat["longitud"], errors="coerce")
-    cat = cat.dropna(subset=["latitud","longitud"])
+    # Limpieza robusta de coordenadas (acepta " -29,90 ", "Lat:-29.90", etc.)
+    cat["latitud"]  = cat["latitud"].map(_to_float_coord)
+    cat["longitud"] = cat["longitud"].map(_to_float_coord)
+
+    # Conserva solo filas que tienen ambos
+    cat = cat.dropna(subset=["latitud", "longitud"])
+    # Etiqueta para mapa
     cat["label"] = "BIM " + cat["numero_bim"].astype("string")
     return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label"]]
 
@@ -157,7 +180,6 @@ def get_kpis():
 
     df_bio = q("SELECT numero_bim FROM biorreactores WHERE numero_bim IS NOT NULL")
     distinct_bims = int(df_bio["numero_bim"].drop_duplicates().shape[0]) if not df_bio.empty else 0
-
     total_bims = max(sum_clientes, distinct_bims)
 
     d = q("SELECT COUNT(*) AS c FROM diagnosticos")
