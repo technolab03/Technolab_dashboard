@@ -283,9 +283,7 @@ def view_home():
     k4.metric("📄 Registros", tr)
     k5.metric("📅 Eventos", te)
 
-    with st.expander("🔧 Depuración (opcional)"):
-        st.write(dbg)
-
+    # Sidebar
     st.sidebar.title("🧰 Filtros")
     catalogo_base = construir_catalogo_bims()
     clientes_opts = ["Todos"] + sorted(catalogo_base["cliente"].dropna().unique().tolist())
@@ -363,7 +361,7 @@ def view_detail():
 
     with T2:
         df_d = get_diagnosticos(bim, D1, D2)
-        st.metric("Total diagnósticos", len(df_d))
+        st.metric("Total diagnóticos", len(df_d))
         if df_d.empty:
             st.info("Sin diagnósticos en este rango.")
         else:
@@ -406,7 +404,6 @@ def view_map():
                            file_name="plantilla_coordenadas_bims.csv")
         return
 
-    # Mostrar con pydeck si está; si no, st.map
     try:
         import pydeck as pdk
         lat0 = float(df_map["latitud"].mean()); lon0 = float(df_map["longitud"].mean())
@@ -436,7 +433,7 @@ def view_map():
                        file_name="paradas_bims.csv")
 
 # ==========================================================
-# 🚦 ROUTING (al final, para evitar NameError)
+# 🚦 ROUTING (al final)
 # ==========================================================
 page = st.session_state.get("page", st.query_params.get("page", "home"))
 if page == "detail":
