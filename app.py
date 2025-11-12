@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (Versión Profesional)
+# app.py — Technolab Data Center (versión profesional, listado desde biorreactores, incluye mapa y detalle)
 # -*- coding: utf-8 -*-
 import os
 import pandas as pd
@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="Technolab Data Center", page_icon="🧪", layout="wide")
 
 # ==========================================================
-# 🎨 Estilos
+# Estilos
 # ==========================================================
 st.markdown("""
 <style>
@@ -29,7 +29,7 @@ a.btn-link:hover { background:#1e293b; }
 """, unsafe_allow_html=True)
 
 # ==========================================================
-# 🔗 Conexión MySQL
+# Conexión MySQL (sesión utf8mb4_unicode_ci)
 # ==========================================================
 def build_engine():
     if "mysql" in st.secrets:
@@ -59,13 +59,12 @@ def build_engine():
         cur.execute("SET NAMES utf8mb4;")
         cur.execute("SET collation_connection = 'utf8mb4_unicode_ci';")
         cur.close()
-
     return engine
 
 ENGINE = build_engine()
 
 # ==========================================================
-# 🧩 Funciones auxiliares
+# Utilitarios
 # ==========================================================
 def q(sql: str, params: dict | None = None) -> pd.DataFrame:
     try:
@@ -80,12 +79,11 @@ def _norm_cliente(s: pd.Series) -> pd.Series:
 def _norm_bim_series(s: pd.Series) -> pd.Series:
     x = s.astype("string").fillna("").str.strip()
     x = x.str.replace(r"^\s*bim\s*", "", regex=True)
-    x = x.str.lower()
-    x = x.replace({"none":"", "null":"", "ninguno":""})
+    x = x.str.lower().replace({"none":"", "null":"", "ninguno":""})
     return x
 
 # ==========================================================
-# 📦 Consultas con caché
+# Consultas con caché
 # ==========================================================
 @st.cache_data(ttl=180)
 def get_clientes() -> pd.DataFrame:
@@ -93,14 +91,16 @@ def get_clientes() -> pd.DataFrame:
 
 @st.cache_data(ttl=180)
 def get_biorreactores() -> pd.DataFrame:
+    # SIN filtrar por cliente: así no se pierden registros con cliente vacío
     return q("""
-        SELECT id, cliente,
-               TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS numero_bim,
-               latitud, longitud, altura_bim,
-               tipo_microalga, uso_luz_artificial, tipo_aireador,
-               `fecha_instalación` AS fecha_instalacion
+        SELECT
+           id,
+           cliente,
+           TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS numero_bim,
+           latitud, longitud, altura_bim,
+           tipo_microalga, uso_luz_artificial, tipo_aireador,
+           `fecha_instalación` AS fecha_instalacion
         FROM biorreactores
-        WHERE cliente IS NOT NULL AND TRIM(cliente) <> ''
         ORDER BY cliente, numero_bim
     """)
 
@@ -108,16 +108,44 @@ def get_biorreactores() -> pd.DataFrame:
 def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     cat = get_biorreactores().copy()
     if cliente_sel and cliente_sel != "Todos":
-        cat = cat[cat["cliente"] == cliente_sel]
+        cat = cat[cat["cliente"].fillna("").str.strip() == cliente_sel]
 
-    cat["latitud"] = pd.to_numeric(cat["latitud"], errors="coerce")
+    cat["latitud"]  = pd.to_numeric(cat["latitud"], errors="coerce")
     cat["longitud"] = pd.to_numeric(cat["longitud"], errors="coerce")
-    cat = cat.dropna(subset=["latitud", "longitud"])
+    cat = cat.dropna(subset=["latitud","longitud"])
     cat["label"] = "BIM " + cat["numero_bim"].astype("string")
     return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label"]]
 
+@st.cache_data(ttl=180)
+def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
+    return q("""
+        SELECT id, numero_bim, nombre_evento, fecha, comentarios
+        FROM fechas_BIMs
+        WHERE numero_bim = :bim AND fecha BETWEEN :d1 AND :d2
+        ORDER BY fecha DESC
+    """, {"bim": str(bim), "d1": d1, "d2": d2})
+
+@st.cache_data(ttl=180)
+def get_diagnosticos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
+    return q("""
+        SELECT d.id, d.usuario_id, d.PreguntaCliente, d.respuestaGPT, d.fecha
+        FROM diagnosticos d
+        WHERE d.usuario_id IN (SELECT r.usuario_id FROM registros r WHERE r.BIM = :bim)
+          AND d.fecha BETWEEN :d1 AND :d2
+        ORDER BY d.fecha DESC
+    """, {"bim": str(bim), "d1": d1, "d2": d2})
+
+@st.cache_data(ttl=180)
+def get_registros(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
+    return q("""
+        SELECT id, usuario_id, BIM, respuestaGPT, HEX, fecha
+        FROM registros
+        WHERE BIM = :bim AND fecha BETWEEN :d1 AND :d2
+        ORDER BY fecha DESC
+    """, {"bim": str(bim), "d1": d1, "d2": d2})
+
 # ==========================================================
-# 📊 Indicadores generales (KPIs)
+# KPIs
 # ==========================================================
 @st.cache_data(ttl=180)
 def get_kpis():
@@ -131,6 +159,7 @@ def get_kpis():
     distinct_bims = int(df_bio["numero_bim"].drop_duplicates().shape[0]) if not df_bio.empty else 0
 
     total_bims = max(sum_clientes, distinct_bims)
+
     d = q("SELECT COUNT(*) AS c FROM diagnosticos")
     total_diag = int(d["c"].iloc[0]) if not d.empty else 0
     r = q("SELECT COUNT(*) AS c FROM registros")
@@ -141,7 +170,7 @@ def get_kpis():
     return total_clientes, total_bims, total_diag, total_regs, total_eventos
 
 # ==========================================================
-# 🔗 Navegación
+# Navegación
 # ==========================================================
 def go_home():
     st.session_state.page = "home"
@@ -159,9 +188,11 @@ if "page" not in st.session_state:
     st.session_state.page = st.query_params.get("page", "home")
 if "selected_bim" not in st.session_state:
     st.session_state.selected_bim = st.query_params.get("bim", None)
+if "mostrar_mapa" not in st.session_state:
+    st.session_state.mostrar_mapa = False
 
 # ==========================================================
-# 🏠 Página principal
+# Página principal
 # ==========================================================
 def view_home():
     st.title("🧠 Technolab Data Center — Panel General")
@@ -176,14 +207,18 @@ def view_home():
 
     # --- Filtros laterales ---
     st.sidebar.title("Filtros de visualización")
-    bio_df = get_biorreactores()
-    clientes_opts = ["Todos"] + sorted(bio_df["cliente"].unique().tolist())
+    bio_df = get_biorreactores().copy()
+    bio_df["cliente"] = bio_df["cliente"].astype("string")
+
+    # Opciones de cliente solo con nombres no vacíos
+    clientes_opts = ["Todos"] + sorted([c for c in bio_df["cliente"].dropna().str.strip().unique().tolist() if c != ""])
     cliente_sel = st.sidebar.selectbox("Cliente", clientes_opts, key="cliente_sel")
 
     if st.sidebar.button("🌍 Mostrar mapa de bioreactores"):
-        st.session_state["mostrar_mapa"] = not st.session_state.get("mostrar_mapa", False)
+        st.session_state.mostrar_mapa = not st.session_state.mostrar_mapa
 
-    if st.session_state.get("mostrar_mapa", False):
+    # --- Mapa ---
+    if st.session_state.mostrar_mapa:
         st.subheader("🌍 Mapa de Bioreactores")
         import pydeck as pdk
         df_map = get_map_df(cliente_sel)
@@ -221,14 +256,18 @@ def view_home():
     st.divider()
     st.subheader("📋 Listado de Bioreactores")
 
+    # Filtrado: si se elige cliente, aplicamos; si no, mostramos todos (incluye sin cliente)
     if cliente_sel != "Todos":
-        bio_df = bio_df[bio_df["cliente"] == cliente_sel]
+        bio_df = bio_df[bio_df["cliente"].fillna("").str.strip() == cliente_sel]
 
     if bio_df.empty:
         st.warning("No se encontraron bioreactores para el filtro aplicado.")
     else:
-        for cliente, grp in bio_df.groupby("cliente"):
-            st.markdown(f"### 👤 {cliente}")
+        # Agrupa por cliente, preservando vacíos; para vacíos no imprime encabezado
+        for cliente, grp in bio_df.groupby(bio_df["cliente"].fillna("").str.strip(), dropna=False):
+            if cliente:
+                st.markdown(f"### 👤 {cliente}")
+
             cols = st.columns(3)
             for i, (_, r) in enumerate(grp.iterrows()):
                 with cols[i % 3]:
@@ -245,18 +284,18 @@ def view_home():
                         f"Luz artificial: {luz}  \n"
                         f"Instalación: {fecha}"
                     )
-                    if st.button(label, key=f"btn_bim_{cliente}_{r['numero_bim']}"):
+                    if st.button(label, key=f"btn_bim_{cliente or 'sin_cliente'}_{r['numero_bim']}"):
                         go_detail(str(r["numero_bim"]))
 
 # ==========================================================
-# 🔎 Detalle del Bioreactor
+# Detalle del Bioreactor
 # ==========================================================
 def view_detail():
     catalogo = get_biorreactores()
     bim = str(st.session_state.selected_bim) if st.session_state.selected_bim else None
 
     if not bim or bim not in set(catalogo["numero_bim"].astype("string")):
-        st.info("Bioreactor no encontrado. Regresando al panel principal…")
+        st.info("Bioreactor no encontrado. Regresando al panel general…")
         go_home()
         st.stop()
 
@@ -264,9 +303,10 @@ def view_detail():
     st.title(f"🧬 Detalle del Bioreactor {bim}")
 
     sel = catalogo[catalogo["numero_bim"].astype("string") == bim].iloc[0]
+
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown(f"**Cliente:** {sel['cliente']}")
+        st.markdown(f"**Cliente:** {sel.get('cliente') or '—'}")
         st.markdown(f"**Microalga cultivada:** {sel.get('tipo_microalga') or '—'}")
         st.markdown(f"**Tipo de aireador:** {sel.get('tipo_aireador') or '—'}")
         st.markdown(f"**Altura del bioreactor:** {sel.get('altura_bim') or '—'} m")
@@ -276,8 +316,42 @@ def view_detail():
         st.markdown(f"**Fecha de instalación:** {sel.get('fecha_instalacion') or '—'}")
         st.markdown(f"**Coordenadas:** ({sel.get('latitud') or '—'}, {sel.get('longitud') or '—'})")
 
+    st.divider()
+    hoy = datetime.utcnow().date()
+    d1 = datetime.combine(st.date_input("Desde", hoy - timedelta(days=30), key="d1_detail"), datetime.min.time())
+    d2 = datetime.combine(st.date_input("Hasta", hoy, key="d2_detail"), datetime.max.time())
+
+    T1, T2, T3 = st.tabs(["Registros", "Diagnósticos", "Eventos del bioreactor"])
+
+    with T1:
+        df_r = get_registros(bim, d1, d2)
+        st.metric("Total de registros", len(df_r))
+        if df_r.empty:
+            st.info("Sin registros en el rango indicado.")
+        else:
+            st.dataframe(df_r, use_container_width=True)
+            st.download_button("Descargar CSV", df_r.to_csv(index=False).encode("utf-8"), file_name=f"registros_BIM{bim}.csv")
+
+    with T2:
+        df_d = get_diagnosticos(bim, d1, d2)
+        st.metric("Total de diagnósticos", len(df_d))
+        if df_d.empty:
+            st.info("Sin diagnósticos en el rango indicado.")
+        else:
+            st.dataframe(df_d, use_container_width=True)
+            st.download_button("Descargar CSV", df_d.to_csv(index=False).encode("utf-8"), file_name=f"diagnosticos_BIM{bim}.csv")
+
+    with T3:
+        df_e = get_eventos(bim, d1, d2)
+        st.metric("Total de eventos", len(df_e))
+        if df_e.empty:
+            st.info("Sin eventos registrados para este bioreactor en el rango indicado.")
+        else:
+            st.dataframe(df_e, use_container_width=True)
+            st.download_button("Descargar CSV", df_e.to_csv(index=False).encode("utf-8"), file_name=f"eventos_BIM{bim}.csv")
+
 # ==========================================================
-# 🚦 Routing
+# Routing
 # ==========================================================
 page = st.session_state.get("page", st.query_params.get("page", "home"))
 if page == "detail":
