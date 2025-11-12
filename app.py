@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (marcadores emoji fijos + listado sin info redundante)
+# app.py — Technolab Data Center (IconLayer emoji + filtro que centra mapa)
 # -*- coding: utf-8 -*-
 import os
 import re
@@ -123,9 +123,21 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     cat["latitud"]  = cat["latitud"].map(_to_float_coord)
     cat["longitud"] = cat["longitud"].map(_to_float_coord)
     cat = cat.dropna(subset=["latitud","longitud"])
+    if cat.empty:
+        return cat
+
     cat["label"] = "BIM " + cat["numero_bim"].astype("string")
-    cat["icon"]  = "🌱"   # emoji marcador
-    return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon"]]
+
+    # Icono tipo emoji 🌱 usando una imagen (Twemoji)
+    icon_cfg = {
+        "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f331.png",  # 🌱
+        "width": 72,
+        "height": 72,
+        "anchorY": 72,
+    }
+    cat["icon_data"] = [icon_cfg] * len(cat)
+
+    return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon_data"]]
 
 @st.cache_data(ttl=180)
 def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
@@ -223,7 +235,9 @@ def view_home():
     bio_df = get_biorreactores().copy()
     bio_df["cliente"] = bio_df["cliente"].astype("string")
 
-    clientes_opts = ["Todos"] + sorted([c for c in bio_df["cliente"].dropna().str.strip().unique().tolist() if c != ""])
+    clientes_opts = ["Todos"] + sorted(
+        [c for c in bio_df["cliente"].dropna().str.strip().unique().tolist() if c != ""]
+    )
     cliente_sel = st.sidebar.selectbox("Cliente", clientes_opts, key="cliente_sel_home")
 
     if st.sidebar.button("🌍 Abrir mapa de bioreactores"):
@@ -246,7 +260,6 @@ def view_home():
             cols = st.columns(3)
             for i, (_, r) in enumerate(grp.iterrows()):
                 with cols[i % 3]:
-                    # Botón minimalista (sin info redundante debajo)
                     label_btn = f"🌿 BIM {r['numero_bim']}"
                     if st.button(label_btn, key=f"btn_bim_{cliente or 'sin_cliente'}_{r['numero_bim']}"):
                         go_detail(str(r["numero_bim"]))
@@ -255,13 +268,21 @@ def view_home():
 # Página del mapa (ventana propia)
 # ==========================================================
 def view_map():
-    st.markdown('<a class="btn-link" href="?page=home" target="_self">⬅️ Volver al Panel General</a>', unsafe_allow_html=True)
+    st.markdown(
+        '<a class="btn-link" href="?page=home" target="_self">⬅️ Volver al Panel General</a>',
+        unsafe_allow_html=True,
+    )
     st.title("🌍 Mapa de Bioreactores")
 
-    # Filtro local para el mapa (agricultor/cliente)
     base = get_biorreactores()
-    clientes_opts = ["Todos"] + sorted([c for c in base["cliente"].dropna().astype("string").str.strip().unique().tolist() if c != ""])
-    cliente_sel = st.selectbox("Filtrar por agricultor (cliente)", clientes_opts, key="cliente_sel_map")
+    clientes_opts = ["Todos"] + sorted(
+        [c for c in base["cliente"].dropna().astype("string").str.strip().unique().tolist() if c != ""]
+    )
+    cliente_sel = st.selectbox(
+        "Seleccionar agricultor (cliente) para centrar el mapa",
+        clientes_opts,
+        key="cliente_sel_map",
+    )
 
     df_map = get_map_df(cliente_sel)
     if df_map.empty:
@@ -269,38 +290,46 @@ def view_map():
         return
 
     import pydeck as pdk
-    lat0 = float(df_map["latitud"].mean())
-    lon0 = float(df_map["longitud"].mean())
-    view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=9, pitch=0)
 
-    # Marcador: emoji 🌱 (tamaño en píxeles; no cambia con el zoom)
-    layer_emoji = pdk.Layer(
-        "TextLayer",
+    # Centro y zoom dependen del filtro:
+    if cliente_sel == "Todos":
+        lat0 = float(df_map["latitud"].mean())
+        lon0 = float(df_map["longitud"].mean())
+        zoom = 8  # vista general
+    else:
+        lat0 = float(df_map["latitud"].mean())
+        lon0 = float(df_map["longitud"].mean())
+        zoom = 12  # zoom más cercano al agricultor seleccionado
+
+    view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=zoom, pitch=0)
+
+    # Icono tipo emoji 🌱 (IconLayer, tamaño constante)
+    layer_icon = pdk.Layer(
+        "IconLayer",
         data=df_map,
+        get_icon="icon_data",
         get_position="[longitud, latitud]",
-        get_text="icon",           # 🌱
-        get_size=30,               # píxeles (ajusta a gusto)
-        get_text_anchor="middle",
-        get_alignment_baseline="center",
-        pickable=True
+        size_scale=15,
+        get_size=4,
+        pickable=True,
     )
 
-    # Etiqueta "BIM X" a la derecha del emoji
+    # Etiqueta "BIM X" a la derecha del icono
     df_map["title"] = df_map["label"].astype(str)
     layer_label = pdk.Layer(
         "TextLayer",
         data=df_map,
         get_position="[longitud, latitud]",
         get_text="title",
-        get_size=14,               # píxeles
+        get_size=14,
         get_color=[255, 255, 255],
         get_text_anchor="start",
         get_alignment_baseline="center",
-        get_pixel_offset=[18, 0]   # separa el texto del emoji
+        get_pixel_offset=[18, 0],
     )
 
     deck = pdk.Deck(
-        layers=[layer_emoji, layer_label],
+        layers=[layer_icon, layer_label],
         initial_view_state=view,
         tooltip={"html": "<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"},
     )
@@ -318,7 +347,10 @@ def view_detail():
         go_home()
         st.stop()
 
-    st.markdown('<a class="btn-link" href="?page=home" target="_self">⬅️ Volver al Panel General</a>', unsafe_allow_html=True)
+    st.markdown(
+        '<a class="btn-link" href="?page=home" target="_self">⬅️ Volver al Panel General</a>',
+        unsafe_allow_html=True,
+    )
     st.title(f"🧬 Detalle del Bioreactor {bim}")
 
     sel = catalogo[catalogo["numero_bim"].astype("string") == bim].iloc[0]
@@ -349,7 +381,11 @@ def view_detail():
             st.info("Sin registros en el rango indicado.")
         else:
             st.dataframe(df_r, use_container_width=True)
-            st.download_button("Descargar CSV", df_r.to_csv(index=False).encode("utf-8"), file_name=f"registros_BIM{bim}.csv")
+            st.download_button(
+                "Descargar CSV",
+                df_r.to_csv(index=False).encode("utf-8"),
+                file_name=f"registros_BIM{bim}.csv",
+            )
 
     with T2:
         df_d = get_diagnosticos(bim, d1, d2)
@@ -358,7 +394,11 @@ def view_detail():
             st.info("Sin diagnósticos en el rango indicado.")
         else:
             st.dataframe(df_d, use_container_width=True)
-            st.download_button("Descargar CSV", df_d.to_csv(index=False).encode("utf-8"), file_name=f"diagnósticos_BIM{bim}.csv")
+            st.download_button(
+                "Descargar CSV",
+                df_d.to_csv(index=False).encode("utf-8"),
+                file_name=f"diagnosticos_BIM{bim}.csv",
+            )
 
     with T3:
         df_e = get_eventos(bim, d1, d2)
@@ -367,7 +407,11 @@ def view_detail():
             st.info("Sin eventos registrados para este bioreactor en el rango indicado.")
         else:
             st.dataframe(df_e, use_container_width=True)
-            st.download_button("Descargar CSV", df_e.to_csv(index=False).encode("utf-8"), file_name=f"eventos_BIM{bim}.csv")
+            st.download_button(
+                "Descargar CSV",
+                df_e.to_csv(index=False).encode("utf-8"),
+                file_name=f"eventos_BIM{bim}.csv",
+            )
 
 # ==========================================================
 # Routing
