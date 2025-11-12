@@ -289,7 +289,7 @@ def view_home():
     clientes_opts = ["Todos"] + sorted(catalogo_base["cliente"].dropna().unique().tolist())
     cliente_sel = st.sidebar.selectbox("👤 Cliente", clientes_opts, key="cliente_sel")
     if st.sidebar.button("🗺️ Abrir mapa"):
-        go_map(); st.experimental_rerun()
+        go_map(); st.rerun()  # <-- actualizado
 
     st.divider()
 
@@ -306,7 +306,7 @@ def view_home():
             with cols[i % 3]:
                 label = f"🧬 BIM {r['numero_bim']}\n\nMicroalga: {r.get('tipo_microalga') or '-'}"
                 if st.button(label, key=f"btn_bim_{cliente}_{r['numero_bim']}"):
-                    go_detail(str(r["numero_bim"])); st.experimental_rerun()
+                    go_detail(str(r["numero_bim"])); st.rerun()  # <-- actualizado
 
 # ==========================================================
 # 🔎 DETALLE
@@ -317,7 +317,7 @@ def view_detail():
 
     if not bim or bim not in set(catalogo["numero_bim"].astype("string")):
         st.info("BIM no encontrado. Volviendo al inicio…")
-        go_home(); st.experimental_rerun()
+        go_home(); st.rerun()  # <-- actualizado
 
     st.markdown('<a class="btn-link" href="?page=home" target="_self">⬅️ Volver</a>', unsafe_allow_html=True)
     st.title(f"🧬 BIM {bim}")
