@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (marcador emoji en mapa, parser coords robusto, botón BIM 🌿)
+# app.py — Technolab Data Center (mapa en página propia + marcadores de tamaño fijo + filtro por agricultor)
 # -*- coding: utf-8 -*-
 import os
 import re
@@ -30,7 +30,7 @@ a.btn-link:hover { background:#1e293b; }
 """, unsafe_allow_html=True)
 
 # ==========================================================
-# Conexión MySQL (sesión utf8mb4_unicode_ci)
+# Conexión MySQL
 # ==========================================================
 def build_engine():
     if "mysql" in st.secrets:
@@ -74,17 +74,12 @@ def q(sql: str, params: dict | None = None) -> pd.DataFrame:
         st.error(f"Error de consulta SQL: {e}")
         return pd.DataFrame()
 
-def _norm_cliente(s: pd.Series) -> pd.Series:
-    return s.astype("string").str.strip()
-
 def _norm_bim_series(s: pd.Series) -> pd.Series:
     x = s.astype("string").fillna("").str.strip()
     x = x.str.replace(r"^\s*bim\s*", "", regex=True)
     x = x.str.lower().replace({"none":"", "null":"", "ninguno":""})
     return x
 
-# Parser robusto para coordenadas: primer número (coma o punto)
-import re
 _coord_pattern = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 def _to_float_coord(val):
     if pd.isna(val):
@@ -124,13 +119,13 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     cat = get_biorreactores().copy()
     if cliente_sel and cliente_sel != "Todos":
         cat = cat[cat["cliente"].fillna("").str.strip() == cliente_sel]
+
     cat["latitud"]  = cat["latitud"].map(_to_float_coord)
     cat["longitud"] = cat["longitud"].map(_to_float_coord)
     cat = cat.dropna(subset=["latitud","longitud"])
     cat["label"] = "BIM " + cat["numero_bim"].astype("string")
-    # emoji como columna
-    cat["icon"] = "🌿"
-    return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon"]]
+    cat["pin"] = "📍"
+    return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","pin"]]
 
 @st.cache_data(ttl=180)
 def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
@@ -199,12 +194,15 @@ def go_detail(bim: str):
     st.query_params.clear()
     st.query_params.update({"page": "detail", "bim": str(bim)})
 
+def go_map():
+    st.session_state.page = "map"
+    st.query_params.clear()
+    st.query_params["page"] = "map"
+
 if "page" not in st.session_state:
     st.session_state.page = st.query_params.get("page", "home")
 if "selected_bim" not in st.session_state:
     st.session_state.selected_bim = st.query_params.get("bim", None)
-if "mostrar_mapa" not in st.session_state:
-    st.session_state.mostrar_mapa = False
 
 # ==========================================================
 # Página principal
@@ -220,58 +218,16 @@ def view_home():
     k4.metric("Registros de datos", tr)
     k5.metric("Eventos asociados", te)
 
-    # --- Filtros laterales ---
+    # --- Filtros laterales + acceso al mapa ---
     st.sidebar.title("Filtros de visualización")
     bio_df = get_biorreactores().copy()
     bio_df["cliente"] = bio_df["cliente"].astype("string")
 
     clientes_opts = ["Todos"] + sorted([c for c in bio_df["cliente"].dropna().str.strip().unique().tolist() if c != ""])
-    cliente_sel = st.sidebar.selectbox("Cliente", clientes_opts, key="cliente_sel")
+    cliente_sel = st.sidebar.selectbox("Cliente", clientes_opts, key="cliente_sel_home")
 
-    if st.sidebar.button("🌍 Mostrar mapa de bioreactores"):
-        st.session_state.mostrar_mapa = not st.session_state.mostrar_mapa
-
-    # --- Mapa ---
-    if st.session_state.mostrar_mapa:
-        st.subheader("🌍 Mapa de Bioreactores")
-        import pydeck as pdk
-        df_map = get_map_df(cliente_sel)
-        if df_map.empty:
-            st.info("No existen coordenadas registradas para los bioreactores seleccionados.")
-        else:
-            lat0 = float(df_map["latitud"].mean())
-            lon0 = float(df_map["longitud"].mean())
-            view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=8, pitch=0)
-
-            # Capa 1: Emoji grande (tamaño en píxeles, no cambia con el zoom)
-            layer_emoji = pdk.Layer(
-                "TextLayer",
-                data=df_map,
-                get_position="[longitud, latitud]",
-                get_text="icon",          # 🌿
-                get_size=28,              # píxeles
-                get_text_anchor="middle",
-                get_alignment_baseline="bottom"
-            )
-
-            # Capa 2: Etiqueta "BIM X" bajo el emoji
-            layer_label = pdk.Layer(
-                "TextLayer",
-                data=df_map,
-                get_position="[longitud, latitud]",
-                get_text="label",         # "BIM 3", etc.
-                get_size=13,
-                get_text_anchor="middle",
-                get_alignment_baseline="top",
-                get_color=[255, 255, 255]
-            )
-
-            deck = pdk.Deck(
-                layers=[layer_emoji, layer_label],
-                initial_view_state=view,
-                tooltip={"html": "<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"},
-            )
-            st.pydeck_chart(deck, use_container_width=True)
+    if st.sidebar.button("🌍 Abrir mapa de bioreactores"):
+        go_map()
 
     # --- Listado de bioreactores ---
     st.divider()
@@ -290,12 +246,12 @@ def view_home():
             cols = st.columns(3)
             for i, (_, r) in enumerate(grp.iterrows()):
                 with cols[i % 3]:
-                    # Botón minimalista: solo emoji + número de BIM
+                    # Botón minimalista
                     label_btn = f"🌿 BIM {r['numero_bim']}"
                     if st.button(label_btn, key=f"btn_bim_{cliente or 'sin_cliente'}_{r['numero_bim']}"):
                         go_detail(str(r["numero_bim"]))
 
-                    # Información técnica bajo el botón
+                    # Info técnica
                     tipo_microalga = r.get("tipo_microalga") or "—"
                     tipo_aireador  = r.get("tipo_aireador") or "—"
                     altura         = r.get("altura_bim") or "—"
@@ -309,6 +265,64 @@ def view_home():
                         f"**Luz artificial:** {luz}  \n"
                         f"**Instalación:** {fecha}"
                     )
+
+# ==========================================================
+# Página del mapa (ventana propia)
+# ==========================================================
+def view_map():
+    st.markdown('<a class="btn-link" href="?page=home" target="_self">⬅️ Volver al Panel General</a>', unsafe_allow_html=True)
+    st.title("🌍 Mapa de Bioreactores")
+
+    # Filtro local para el mapa (agricultor/cliente)
+    base = get_biorreactores()
+    clientes_opts = ["Todos"] + sorted([c for c in base["cliente"].dropna().astype("string").str.strip().unique().tolist() if c != ""])
+    cliente_sel = st.selectbox("Filtrar por agricultor (cliente)", clientes_opts, key="cliente_sel_map")
+
+    df_map = get_map_df(cliente_sel)
+    if df_map.empty:
+        st.info("No existen coordenadas registradas para los bioreactores seleccionados.")
+        return
+
+    import pydeck as pdk
+    lat0 = float(df_map["latitud"].mean())
+    lon0 = float(df_map["longitud"].mean())
+    view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=9, pitch=0)
+
+    # Marcadores con tamaño fijo en píxeles (no se achican al alejar)
+    layer_points = pdk.Layer(
+        "ScatterplotLayer",
+        data=df_map,
+        get_position="[longitud, latitud]",
+        get_radius=6,                 # radio lógico; lo fijamos con min/max pixels
+        radius_min_pixels=10,         # tamaño constante
+        radius_max_pixels=10,         # tamaño constante
+        pickable=True,
+        get_fill_color=[0, 180, 255, 220],
+        stroke=True,
+        get_line_color=[255, 255, 255],
+        line_width_min_pixels=2
+    )
+
+    # Etiqueta con emoji + BIM encima del punto (en píxeles también)
+    df_map["title"] = "📍 " + df_map["label"].astype(str)
+    layer_labels = pdk.Layer(
+        "TextLayer",
+        data=df_map,
+        get_position="[longitud, latitud]",
+        get_text="title",
+        get_size=16,                  # px
+        get_color=[255, 255, 255],
+        get_text_anchor="start",
+        get_alignment_baseline="center",
+        get_pixel_offset=[12, 0]      # desplaza texto a la derecha del punto
+    )
+
+    deck = pdk.Deck(
+        layers=[layer_points, layer_labels],
+        initial_view_state=view,
+        tooltip={"html": "<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"},
+    )
+    st.pydeck_chart(deck, use_container_width=True)
 
 # ==========================================================
 # Detalle del Bioreactor
@@ -379,6 +393,8 @@ def view_detail():
 page = st.session_state.get("page", st.query_params.get("page", "home"))
 if page == "detail":
     view_detail()
+elif page == "map":
+    view_map()
 else:
     view_home()
 
