@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (Home + Detalle, KPI BIMs = max(SUM(clientes), union códigos), sin errores de colación)
+# app.py — Technolab Data Center (Home + Detalle + Mapa lateral)
 # -*- coding: utf-8 -*-
 import os
 import pandas as pd
@@ -27,7 +27,7 @@ a.btn-link:hover { background:#1e293b; }
 """, unsafe_allow_html=True)
 
 # ==========================================================
-# 🔗 CONEXIÓN MYSQL (sesión forzada a utf8mb4_unicode_ci)
+# 🔗 CONEXIÓN MYSQL
 # ==========================================================
 def build_engine():
     if "mysql" in st.secrets:
@@ -57,7 +57,6 @@ def build_engine():
         cur.execute("SET NAMES utf8mb4;")
         cur.execute("SET collation_connection = 'utf8mb4_unicode_ci';")
         cur.close()
-
     return engine
 
 ENGINE = build_engine()
@@ -76,12 +75,9 @@ def _norm_cliente(s: pd.Series) -> pd.Series:
     return s.astype("string").str.strip()
 
 def _norm_bim_series(s: pd.Series) -> pd.Series:
-    # Normaliza lo mínimo imprescindible para no perder códigos
     x = s.astype("string").fillna("").str.strip()
-    x = x.str.replace(r"^\s*bim\s*", "", regex=True)  # quita prefijo "BIM "
-    x = x.str.lower()
-    # no quitamos guiones ni otros caracteres internos
-    x = x.replace({"none":"", "null":"", "ninguno":""})
+    x = x.str.replace(r"^\s*bim\s*", "", regex=True)
+    x = x.str.lower().replace({"none":"", "null":"", "ninguno":""})
     return x
 
 # ==========================================================
@@ -89,19 +85,14 @@ def _norm_bim_series(s: pd.Series) -> pd.Series:
 # ==========================================================
 @st.cache_data(ttl=180)
 def get_clientes() -> pd.DataFrame:
-    return q("""
-        SELECT id, usuario_id, usuario_nombre, cliente, BIMs_instalados
-        FROM clientes
-    """)
+    return q("SELECT id, usuario_id, usuario_nombre, cliente, BIMs_instalados FROM clientes")
 
 @st.cache_data(ttl=180)
 def get_biorreactores_raw() -> pd.DataFrame:
     return q("""
-        SELECT id,
-               cliente,
+        SELECT id, cliente,
                TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS numero_bim,
-               latitud, longitud, altura_bim,
-               tipo_microalga, uso_luz_artificial, tipo_aireador,
+               latitud, longitud, altura_bim, tipo_microalga, uso_luz_artificial, tipo_aireador,
                `fecha_instalación` AS fecha_instalacion
         FROM biorreactores
         ORDER BY cliente, numero_bim
@@ -130,29 +121,20 @@ def get_latest_usuario_por_bim() -> pd.DataFrame:
     return q("""
         SELECT r.BIM AS numero_bim, r.usuario_id
         FROM registros r
-        JOIN (
-            SELECT BIM, MAX(fecha) AS max_fecha
-            FROM registros
-            WHERE fecha IS NOT NULL
-            GROUP BY BIM
-        ) m ON m.BIM = r.BIM AND m.max_fecha = r.fecha
+        JOIN (SELECT BIM, MAX(fecha) AS max_fecha FROM registros WHERE fecha IS NOT NULL GROUP BY BIM) m
+             ON m.BIM = r.BIM AND m.max_fecha = r.fecha
     """)
 
 @st.cache_data(ttl=180)
 def get_registros_usuario_bim() -> pd.DataFrame:
     return q("""
-        SELECT r.usuario_id,
-               TRIM(CAST(r.BIM AS CHAR CHARACTER SET utf8mb4)) AS bim
-        FROM registros r
-        WHERE r.BIM IS NOT NULL
+        SELECT r.usuario_id, TRIM(CAST(r.BIM AS CHAR CHARACTER SET utf8mb4)) AS bim
+        FROM registros r WHERE r.BIM IS NOT NULL
     """)
 
 @st.cache_data(ttl=180)
 def get_clientes_usuario() -> pd.DataFrame:
-    return q("""
-        SELECT usuario_id, cliente
-        FROM clientes
-    """)
+    return q("SELECT usuario_id, cliente FROM clientes")
 
 @st.cache_data(ttl=180)
 def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
@@ -203,61 +185,51 @@ def construir_catalogo_bims() -> pd.DataFrame:
                 "cliente","numero_bim","latitud","longitud","altura_bim",
                 "tipo_microalga","uso_luz_artificial","tipo_aireador","fecha_instalacion"
             ])
-
         latest = get_latest_usuario_por_bim()
         clientes = clientes.copy()
-
         latest["usuario_id"]   = latest["usuario_id"].astype("string")
         clientes["usuario_id"] = clientes["usuario_id"].astype("string")
         clientes["cliente"]    = _norm_cliente(clientes["cliente"].fillna("(Sin cliente)"))
-
         bims["numero_bim"] = _norm_bim_series(bims["numero_bim"])
         cat = (bims.merge(latest, on="numero_bim", how="left")
-                    .merge(clientes[["usuario_id","cliente"]], on="usuario_id", how="left"))
-
+                  .merge(clientes[["usuario_id","cliente"]], on="usuario_id", how="left"))
         cat["cliente"] = _norm_cliente(cat["cliente"].fillna("(Sin cliente)"))
-
         for c in ["tipo_microalga","tipo_aireador","uso_luz_artificial",
                   "altura_bim","latitud","longitud","fecha_instalacion"]:
             if c not in cat.columns:
                 cat[c] = None
-
         cat = cat[["cliente","numero_bim","latitud","longitud","altura_bim",
                    "tipo_microalga","uso_luz_artificial","tipo_aireador","fecha_instalacion"]].copy()
 
-    # catálogo dedup por (cliente, numero_bim)
-    cat = cat.dropna(subset=["numero_bim"]).drop_duplicates(subset=["cliente","numero_bim"])
-    return cat
+    return cat.dropna(subset=["numero_bim"]).drop_duplicates(subset=["cliente","numero_bim"])
+
+# ==========================================================
+# 🗺️ DF para MAPA
+# ==========================================================
+@st.cache_data(ttl=180)
+def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
+    cat = construir_catalogo_bims().copy()
+    if cliente_sel and cliente_sel != "Todos":
+        cat = cat[cat["cliente"] == cliente_sel]
+    cat["latitud"]  = pd.to_numeric(cat["latitud"], errors="coerce")
+    cat["longitud"] = pd.to_numeric(cat["longitud"], errors="coerce")
+    cat["label"] = "BIM " + cat["numero_bim"].astype("string")
+    return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label"]]
 
 # ==========================================================
 # 📊 KPIs (BIMs = max(SUM(clientes), unión códigos))
 # ==========================================================
 @st.cache_data(ttl=180)
 def get_kpis():
-    # Clientes
     c = q("SELECT COUNT(*) AS c FROM clientes")
     total_clientes = int(c["c"].iloc[0]) if not c.empty else 0
 
-    # (A) Suma declarada por clientes
     sum_cli_df = q("SELECT SUM(COALESCE(BIMs_instalados,0)) AS s FROM clientes")
     sum_clientes = int(sum_cli_df["s"].iloc[0]) if not sum_cli_df.empty and pd.notna(sum_cli_df["s"].iloc[0]) else 0
 
-    # (B) Unión real de códigos (biorreactores + registros + eventos)
-    df_bio = q("""
-        SELECT TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim
-        FROM biorreactores
-        WHERE numero_bim IS NOT NULL
-    """)
-    df_reg = q("""
-        SELECT TRIM(CAST(BIM AS CHAR CHARACTER SET utf8mb4)) AS bim
-        FROM registros
-        WHERE BIM IS NOT NULL
-    """)
-    df_evt = q("""
-        SELECT TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim
-        FROM fechas_BIMs
-        WHERE numero_bim IS NOT NULL
-    """)
+    df_bio = q("SELECT TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim FROM biorreactores WHERE numero_bim IS NOT NULL")
+    df_reg = q("SELECT TRIM(CAST(BIM AS CHAR CHARACTER SET utf8mb4)) AS bim FROM registros WHERE BIM IS NOT NULL")
+    df_evt = q("SELECT TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) AS bim FROM fechas_BIMs WHERE numero_bim IS NOT NULL")
 
     frames = []
     for df in (df_bio, df_reg, df_evt):
@@ -266,42 +238,32 @@ def get_kpis():
             df["bim"] = _norm_bim_series(df["bim"])
             frames.append(df[["bim"]])
 
-    if frames:
-        union_bims = pd.concat(frames, ignore_index=True)
-        union_bims = union_bims[(union_bims["bim"].notna()) & (union_bims["bim"] != "")]
-        distinct_union = int(union_bims["bim"].drop_duplicates().shape[0])
-    else:
-        distinct_union = 0
-
-    # KPI final: que muestre 23 aunque aún no existan todos los códigos cargados
+    distinct_union = 0 if not frames else int(
+        pd.concat(frames, ignore_index=True).query("bim != ''")["bim"].drop_duplicates().shape[0]
+    )
     total_bims = max(sum_clientes, distinct_union)
 
-    # Otros contadores
     d = q("SELECT COUNT(*) AS c FROM diagnosticos"); total_diag = int(d["c"].iloc[0]) if not d.empty else 0
     r = q("SELECT COUNT(*) AS c FROM registros");     total_regs = int(r["c"].iloc[0]) if not r.empty else 0
     e = q("SELECT COUNT(*) AS c FROM fechas_BIMs");   total_eventos = int(e["c"].iloc[0]) if not e.empty else 0
 
-    debug = {
-        "sum_clientes": sum_clientes,
-        "distinct_union": distinct_union,
-        "kpi_bims": total_bims
-    }
+    debug = {"sum_clientes": sum_clientes, "distinct_union": distinct_union, "kpi_bims": total_bims}
     return total_clientes, total_bims, total_diag, total_regs, total_eventos, debug
 
 # ==========================================================
 # 🔗 ROUTER
 # ==========================================================
 def go_home():
-    st.session_state.page = "home"
-    st.session_state.selected_bim = None
-    st.query_params.clear()
-    st.query_params["page"] = "home"
+    st.session_state.page = "home"; st.session_state.selected_bim = None
+    st.query_params.clear(); st.query_params["page"] = "home"
 
 def go_detail(bim: str):
-    st.session_state.page = "detail"
-    st.session_state.selected_bim = str(bim)
-    st.query_params.clear()
-    st.query_params.update({"page": "detail", "bim": str(bim)})
+    st.session_state.page = "detail"; st.session_state.selected_bim = str(bim)
+    st.query_params.clear(); st.query_params.update({"page": "detail", "bim": str(bim)})
+
+def go_map():
+    st.session_state.page = "map"
+    st.query_params.clear(); st.query_params["page"] = "map"
 
 if "page" not in st.session_state:
     st.session_state.page = st.query_params.get("page", "home")
@@ -317,7 +279,7 @@ def view_home():
     tc, tb, td, tr, te, dbg = get_kpis()
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("👥 Clientes", tc)
-    k2.metric("🧩 BIMs", tb)   # ← ahora = max(SUM(clientes), unión de códigos)
+    k2.metric("🧩 BIMs", tb)
     k3.metric("💬 Diagnósticos", td)
     k4.metric("📄 Registros", tr)
     k5.metric("📅 Eventos", te)
@@ -325,21 +287,25 @@ def view_home():
     with st.expander("🔧 Depuración (opcional)"):
         st.write(dbg)
 
+    # Sidebar
+    st.sidebar.title("🧰 Filtros")
+    catalogo_base = construir_catalogo_bims()
+    clientes_opts = ["Todos"] + sorted(catalogo_base["cliente"].dropna().unique().tolist())
+    cliente_sel = st.sidebar.selectbox("👤 Cliente", clientes_opts, key="cliente_sel")
+    # Botón que abre la vista de mapa SIEMPRE (aunque no haya coordenadas)
+    if st.sidebar.button("🗺️ Abrir mapa"):
+        go_map()
+
     st.divider()
 
-    catalogo = construir_catalogo_bims()
+    # Catálogo
+    catalogo = catalogo_base if cliente_sel == "Todos" else catalogo_base[catalogo_base["cliente"] == cliente_sel].copy()
     if catalogo.empty:
-        st.warning("No hay BIMs detectados aún (ni en biorreactores, ni en registros/eventos).")
+        st.warning("No hay BIMs detectados aún para el filtro aplicado.")
         return
 
-    st.sidebar.title("🎛️ Filtros")
-    clientes_opts = ["Todos"] + sorted(catalogo["cliente"].dropna().unique().tolist())
-    cliente_sel = st.sidebar.selectbox("👤 Cliente", clientes_opts)
-
-    cat_f = catalogo if cliente_sel == "Todos" else catalogo[catalogo["cliente"] == cliente_sel].copy()
-
     st.subheader("🧫 Selección de BIMs")
-    for cliente, grp in cat_f.groupby("cliente"):
+    for cliente, grp in catalogo.groupby("cliente"):
         st.markdown(f"### 👤 {cliente}")
         cols = st.columns(3)
         for i, (_, r) in enumerate(grp.iterrows()):
@@ -349,78 +315,74 @@ def view_home():
                     go_detail(str(r["numero_bim"]))
 
 # ==========================================================
-# 🔎 DETALLE
+# 🗺️ MAPA (vista dedicada)
 # ==========================================================
-def view_detail():
-    catalogo = construir_catalogo_bims()
-    bim = str(st.session_state.selected_bim) if st.session_state.selected_bim is not None else None
-
-    if not bim or bim not in set(catalogo["numero_bim"].astype("string")):
-        st.info("BIM no encontrado. Volviendo al inicio…")
-        go_home()
-        st.stop()
-
+def view_map():
     st.markdown('<a class="btn-link" href="?page=home" target="_self">⬅️ Volver</a>', unsafe_allow_html=True)
-    st.title(f"🧬 BIM {bim}")
+    st.title("🗺️ Mapa de BIMs")
 
-    sel = catalogo[catalogo["numero_bim"].astype("string") == bim].iloc[0]
+    # Filtro de cliente en el sidebar también aquí
+    st.sidebar.title("🧰 Filtros")
+    catalogo_base = construir_catalogo_bims()
+    clientes_opts = ["Todos"] + sorted(catalogo_base["cliente"].dropna().unique().tolist())
+    cliente_sel = st.sidebar.selectbox("👤 Cliente", clientes_opts, key="cliente_sel_map")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(f"**Cliente:** {sel['cliente']}")
-        st.markdown(f"**Microalga:** {sel.get('tipo_microalga') or '—'}")
-        st.markdown(f"**Aireador:** {sel.get('tipo_aireador') or '—'}")
-        st.markdown(f"**Altura:** {sel.get('altura_bim') or '—'} m")
-    with c2:
-        luz = sel.get('uso_luz_artificial')
-        st.markdown(f"**Luz artificial:** {'Sí' if bool(luz) else 'No' if luz is not None else '—'}")
-        st.markdown(f"**Fecha instalación:** {sel.get('fecha_instalacion') or '—'}")
-        st.markdown(f"**Coordenadas:** ({sel.get('latitud') or '—'}, {sel.get('longitud') or '—'})")
+    df_map = get_map_df(cliente_sel)
+    have_points = df_map["latitud"].notna().any() and df_map["longitud"].notna().any()
 
-    st.divider()
+    # Si no hay puntos, mostramos mapa placeholder centrado en Coquimbo/La Serena
+    if not have_points:
+        st.info("Aún no hay coordenadas cargadas. Se muestra un mapa de referencia.")
+        df_placeholder = pd.DataFrame([{"latitude": -29.9027, "longitude": -71.2519}])
+        st.map(df_placeholder, use_container_width=True)
 
-    hoy = datetime.utcnow().date()
-    cold1, cold2 = st.columns(2)
-    with cold1:
-        d1 = st.date_input("Desde", hoy - timedelta(days=30), key="d1_detail")
-    with cold2:
-        d2 = st.date_input("Hasta", hoy, key="d2_detail")
-    D1 = datetime.combine(d1, datetime.min.time())
-    D2 = datetime.combine(d2, datetime.max.time())
+        # Plantilla CSV
+        template = pd.DataFrame(columns=["cliente","numero_bim","latitud","longitud","tipo_microalga"])
+        st.download_button(
+            "📥 Descargar plantilla de coordenadas (CSV)",
+            template.to_csv(index=False).encode("utf-8"),
+            file_name="plantilla_coordenadas_bims.csv",
+        )
+        st.caption("Carga latitud/longitud en MySQL (tabla biorreactores) y vuelve a esta vista.")
+    else:
+        # Mostrar con pydeck si está instalado, si no con st.map
+        try:
+            import pydeck as pdk
+            lat0 = float(df_map["latitud"].mean()); lon0 = float(df_map["longitud"].mean())
+            view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=9, pitch=0)
+            layer_points = pdk.Layer(
+                "ScatterplotLayer",
+                data=df_map,
+                get_position="[longitud, latitud]",
+                get_radius=150,
+                pickable=True,
+                get_fill_color=[0, 148, 255, 160],
+            )
+            layer_labels = pdk.Layer(
+                "TextLayer",
+                data=df_map,
+                get_position="[longitud, latitud]",
+                get_text="label",
+                get_size=14,
+                get_color=[255, 255, 255],
+                get_alignment_baseline="bottom",
+            )
+            deck = pdk.Deck(
+                layers=[layer_points, layer_labels],
+                initial_view_state=view,
+                map_style=None,
+                tooltip={"html": "<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"},
+            )
+            st.pydeck_chart(deck, use_container_width=True)
+        except Exception:
+            st.map(df_map.rename(columns={"latitud":"latitude","longitud":"longitude"})[["latitude","longitude"]],
+                   use_container_width=True)
 
-    T1, T2, T3 = st.tabs(["📄 Registros", "💬 Diagnósticos", "📅 Eventos BIM"])
-
-    with T1:
-        df_r = get_registros(bim, D1, D2)
-        st.metric("Total registros", len(df_r))
-        if df_r.empty:
-            st.info("Sin registros en este rango.")
-        else:
-            st.dataframe(df_r, use_container_width=True)
-            st.download_button("📥 Descargar CSV", df_r.to_csv(index=False).encode("utf-8"),
-                               file_name=f"registros_BIM{bim}.csv")
-
-    with T2:
-        df_d = get_diagnosticos(bim, D1, D2)
-        st.metric("Total diagnósticos", len(df_d))
-        if df_d.empty:
-            st.info("Sin diagnósticos en este rango.")
-        else:
-            st.dataframe(df_d, use_container_width=True)
-            st.download_button("📥 Descargar CSV", df_d.to_csv(index=False).encode("utf-8"),
-                               file_name=f"diagnosticos_BIM{bim}.csv")
-
-    with T3:
-        df_e = get_eventos(bim, D1, D2)
-        st.metric("Total eventos", len(df_e))
-        if df_e.empty:
-            st.info("Sin eventos para este BIM.")
-        else:
-            st.dataframe(df_e, use_container_width=True)
-            st.download_button("📥 Descargar CSV", df_e.to_csv(index=False).encode("utf-8"),
-                               file_name=f"eventos_BIM{bim}.csv")
-
-    st.caption("Tip: puedes compartir esta vista; la URL ya incluye el BIM seleccionado.")
+        st.download_button(
+            "📥 Descargar paradas (CSV)",
+            df_map.rename(columns={"numero_bim":"bim"}).to_csv(index=False).encode("utf-8"),
+            file_name="paradas_bims.csv",
+        )
 
 # ==========================================================
 # 🚦 ROUTING
@@ -428,6 +390,8 @@ def view_detail():
 page = st.session_state.get("page", st.query_params.get("page", "home"))
 if page == "detail":
     view_detail()
+elif page == "map":
+    view_map()
 else:
     view_home()
 
