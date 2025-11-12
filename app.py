@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (versión profesional, listado desde biorreactores, incluye mapa y detalle)
+# app.py — Technolab Data Center (versión profesional, botón BIM minimalista 🌿)
 # -*- coding: utf-8 -*-
 import os
 import pandas as pd
@@ -91,7 +91,7 @@ def get_clientes() -> pd.DataFrame:
 
 @st.cache_data(ttl=180)
 def get_biorreactores() -> pd.DataFrame:
-    # SIN filtrar por cliente: así no se pierden registros con cliente vacío
+    # No filtramos por cliente para incluir registros sin cliente asignado
     return q("""
         SELECT
            id,
@@ -210,7 +210,6 @@ def view_home():
     bio_df = get_biorreactores().copy()
     bio_df["cliente"] = bio_df["cliente"].astype("string")
 
-    # Opciones de cliente solo con nombres no vacíos
     clientes_opts = ["Todos"] + sorted([c for c in bio_df["cliente"].dropna().str.strip().unique().tolist() if c != ""])
     cliente_sel = st.sidebar.selectbox("Cliente", clientes_opts, key="cliente_sel")
 
@@ -256,14 +255,12 @@ def view_home():
     st.divider()
     st.subheader("📋 Listado de Bioreactores")
 
-    # Filtrado: si se elige cliente, aplicamos; si no, mostramos todos (incluye sin cliente)
     if cliente_sel != "Todos":
         bio_df = bio_df[bio_df["cliente"].fillna("").str.strip() == cliente_sel]
 
     if bio_df.empty:
         st.warning("No se encontraron bioreactores para el filtro aplicado.")
     else:
-        # Agrupa por cliente, preservando vacíos; para vacíos no imprime encabezado
         for cliente, grp in bio_df.groupby(bio_df["cliente"].fillna("").str.strip(), dropna=False):
             if cliente:
                 st.markdown(f"### 👤 {cliente}")
@@ -271,21 +268,25 @@ def view_home():
             cols = st.columns(3)
             for i, (_, r) in enumerate(grp.iterrows()):
                 with cols[i % 3]:
-                    tipo_microalga = r.get("tipo_microalga") or "—"
-                    tipo_aireador = r.get("tipo_aireador") or "—"
-                    altura = r.get("altura_bim") or "—"
-                    luz = "Sí" if r.get("uso_luz_artificial") else "No"
-                    fecha = r.get("fecha_instalacion") or "—"
-                    label = (
-                        f"🧬 **BIM {r['numero_bim']}**  \n"
-                        f"Microalga: {tipo_microalga}  \n"
-                        f"Aireador: {tipo_aireador}  \n"
-                        f"Altura: {altura} m  \n"
-                        f"Luz artificial: {luz}  \n"
-                        f"Instalación: {fecha}"
-                    )
-                    if st.button(label, key=f"btn_bim_{cliente or 'sin_cliente'}_{r['numero_bim']}"):
+                    # Botón minimalista: solo emoji + número de BIM
+                    label_btn = f"🌿 BIM {r['numero_bim']}"
+                    if st.button(label_btn, key=f"btn_bim_{cliente or 'sin_cliente'}_{r['numero_bim']}"):
                         go_detail(str(r["numero_bim"]))
+
+                    # Información técnica bajo el botón
+                    tipo_microalga = r.get("tipo_microalga") or "—"
+                    tipo_aireador  = r.get("tipo_aireador") or "—"
+                    altura         = r.get("altura_bim") or "—"
+                    luz            = "Sí" if r.get("uso_luz_artificial") else "No"
+                    fecha          = r.get("fecha_instalacion") or "—"
+
+                    st.markdown(
+                        f"**Microalga:** {tipo_microalga}  \n"
+                        f"**Aireador:** {tipo_aireador}  \n"
+                        f"**Altura:** {altura} m  \n"
+                        f"**Luz artificial:** {luz}  \n"
+                        f"**Instalación:** {fecha}"
+                    )
 
 # ==========================================================
 # Detalle del Bioreactor
