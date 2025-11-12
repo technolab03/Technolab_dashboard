@@ -27,7 +27,7 @@ a.btn-link:hover { background:#1e293b; }
 """, unsafe_allow_html=True)
 
 # ==========================================================
-# 🔗 CONEXIÓN MYSQL
+# 🔗 CONEXIÓN MYSQL (sesión forzada a utf8mb4_unicode_ci)
 # ==========================================================
 def build_engine():
     if "mysql" in st.secrets:
@@ -76,7 +76,7 @@ def _norm_cliente(s: pd.Series) -> pd.Series:
 
 def _norm_bim_series(s: pd.Series) -> pd.Series:
     x = s.astype("string").fillna("").str.strip()
-    x = x.str.replace(r"^\s*bim\s*", "", regex=True)
+    x = x.str.replace(r"^\s*bim\s*", "", regex=True)  # quita prefijo "BIM "
     x = x.str.lower().replace({"none":"", "null":"", "ninguno":""})
     return x
 
@@ -121,8 +121,12 @@ def get_latest_usuario_por_bim() -> pd.DataFrame:
     return q("""
         SELECT r.BIM AS numero_bim, r.usuario_id
         FROM registros r
-        JOIN (SELECT BIM, MAX(fecha) AS max_fecha FROM registros WHERE fecha IS NOT NULL GROUP BY BIM) m
-             ON m.BIM = r.BIM AND m.max_fecha = r.fecha
+        JOIN (
+            SELECT BIM, MAX(fecha) AS max_fecha
+            FROM registros
+            WHERE fecha IS NOT NULL
+            GROUP BY BIM
+        ) m ON m.BIM = r.BIM AND m.max_fecha = r.fecha
     """)
 
 @st.cache_data(ttl=180)
@@ -251,7 +255,7 @@ def get_kpis():
     return total_clientes, total_bims, total_diag, total_regs, total_eventos, debug
 
 # ==========================================================
-# 🔗 ROUTER
+# 🔗 NAVEGACIÓN (helpers)
 # ==========================================================
 def go_home():
     st.session_state.page = "home"; st.session_state.selected_bim = None
@@ -264,11 +268,6 @@ def go_detail(bim: str):
 def go_map():
     st.session_state.page = "map"
     st.query_params.clear(); st.query_params["page"] = "map"
-
-if "page" not in st.session_state:
-    st.session_state.page = st.query_params.get("page", "home")
-if "selected_bim" not in st.session_state:
-    st.session_state.selected_bim = st.query_params.get("bim", None)
 
 # ==========================================================
 # 🏠 HOME
@@ -287,18 +286,15 @@ def view_home():
     with st.expander("🔧 Depuración (opcional)"):
         st.write(dbg)
 
-    # Sidebar
     st.sidebar.title("🧰 Filtros")
     catalogo_base = construir_catalogo_bims()
     clientes_opts = ["Todos"] + sorted(catalogo_base["cliente"].dropna().unique().tolist())
     cliente_sel = st.sidebar.selectbox("👤 Cliente", clientes_opts, key="cliente_sel")
-    # Botón que abre la vista de mapa SIEMPRE (aunque no haya coordenadas)
     if st.sidebar.button("🗺️ Abrir mapa"):
-        go_map()
+        go_map(); st.experimental_rerun()
 
     st.divider()
 
-    # Catálogo
     catalogo = catalogo_base if cliente_sel == "Todos" else catalogo_base[catalogo_base["cliente"] == cliente_sel].copy()
     if catalogo.empty:
         st.warning("No hay BIMs detectados aún para el filtro aplicado.")
@@ -312,7 +308,80 @@ def view_home():
             with cols[i % 3]:
                 label = f"🧬 BIM {r['numero_bim']}\n\nMicroalga: {r.get('tipo_microalga') or '-'}"
                 if st.button(label, key=f"btn_bim_{cliente}_{r['numero_bim']}"):
-                    go_detail(str(r["numero_bim"]))
+                    go_detail(str(r["numero_bim"])); st.experimental_rerun()
+
+# ==========================================================
+# 🔎 DETALLE
+# ==========================================================
+def view_detail():
+    catalogo = construir_catalogo_bims()
+    bim = str(st.session_state.get("selected_bim")) if st.session_state.get("selected_bim") is not None else None
+
+    if not bim or bim not in set(catalogo["numero_bim"].astype("string")):
+        st.info("BIM no encontrado. Volviendo al inicio…")
+        go_home(); st.experimental_rerun()
+
+    st.markdown('<a class="btn-link" href="?page=home" target="_self">⬅️ Volver</a>', unsafe_allow_html=True)
+    st.title(f"🧬 BIM {bim}")
+
+    sel = catalogo[catalogo["numero_bim"].astype("string") == bim].iloc[0]
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"**Cliente:** {sel['cliente']}")
+        st.markdown(f"**Microalga:** {sel.get('tipo_microalga') or '—'}")
+        st.markdown(f"**Aireador:** {sel.get('tipo_aireador') or '—'}")
+        st.markdown(f"**Altura:** {sel.get('altura_bim') or '—'} m")
+    with c2:
+        luz = sel.get('uso_luz_artificial')
+        st.markdown(f"**Luz artificial:** {'Sí' if bool(luz) else 'No' if luz is not None else '—'}")
+        st.markdown(f"**Fecha instalación:** {sel.get('fecha_instalacion') or '—'}")
+        st.markdown(f"**Coordenadas:** ({sel.get('latitud') or '—'}, {sel.get('longitud') or '—'})")
+
+    st.divider()
+
+    hoy = datetime.utcnow().date()
+    cold1, cold2 = st.columns(2)
+    with cold1:
+        d1 = st.date_input("Desde", hoy - timedelta(days=30), key="d1_detail")
+    with cold2:
+        d2 = st.date_input("Hasta", hoy, key="d2_detail")
+    D1 = datetime.combine(d1, datetime.min.time())
+    D2 = datetime.combine(d2, datetime.max.time())
+
+    T1, T2, T3 = st.tabs(["📄 Registros", "💬 Diagnósticos", "📅 Eventos BIM"])
+
+    with T1:
+        df_r = get_registros(bim, D1, D2)
+        st.metric("Total registros", len(df_r))
+        if df_r.empty:
+            st.info("Sin registros en este rango.")
+        else:
+            st.dataframe(df_r, use_container_width=True)
+            st.download_button("📥 Descargar CSV", df_r.to_csv(index=False).encode("utf-8"),
+                               file_name=f"registros_BIM{bim}.csv")
+
+    with T2:
+        df_d = get_diagnosticos(bim, D1, D2)
+        st.metric("Total diagnósticos", len(df_d))
+        if df_d.empty:
+            st.info("Sin diagnósticos en este rango.")
+        else:
+            st.dataframe(df_d, use_container_width=True)
+            st.download_button("📥 Descargar CSV", df_d.to_csv(index=False).encode("utf-8"),
+                               file_name=f"diagnosticos_BIM{bim}.csv")
+
+    with T3:
+        df_e = get_eventos(bim, D1, D2)
+        st.metric("Total eventos", len(df_e))
+        if df_e.empty:
+            st.info("Sin eventos para este BIM.")
+        else:
+            st.dataframe(df_e, use_container_width=True)
+            st.download_button("📥 Descargar CSV", df_e.to_csv(index=False).encode("utf-8"),
+                               file_name=f"eventos_BIM{bim}.csv")
+
+    st.caption("Tip: puedes compartir esta vista; la URL ya incluye el BIM seleccionado.")
 
 # ==========================================================
 # 🗺️ MAPA (vista dedicada)
@@ -321,71 +390,53 @@ def view_map():
     st.markdown('<a class="btn-link" href="?page=home" target="_self">⬅️ Volver</a>', unsafe_allow_html=True)
     st.title("🗺️ Mapa de BIMs")
 
-    # Filtro de cliente en el sidebar también aquí
-    st.sidebar.title("🧰 Filtros")
     catalogo_base = construir_catalogo_bims()
     clientes_opts = ["Todos"] + sorted(catalogo_base["cliente"].dropna().unique().tolist())
-    cliente_sel = st.sidebar.selectbox("👤 Cliente", clientes_opts, key="cliente_sel_map")
+    cliente_sel = st.sidebar.selectbox("👤 Cliente (mapa)", clientes_opts, key="cliente_sel_map")
 
     df_map = get_map_df(cliente_sel)
     have_points = df_map["latitud"].notna().any() and df_map["longitud"].notna().any()
 
-    # Si no hay puntos, mostramos mapa placeholder centrado en Coquimbo/La Serena
     if not have_points:
         st.info("Aún no hay coordenadas cargadas. Se muestra un mapa de referencia.")
-        df_placeholder = pd.DataFrame([{"latitude": -29.9027, "longitude": -71.2519}])
-        st.map(df_placeholder, use_container_width=True)
-
-        # Plantilla CSV
+        st.map(pd.DataFrame([{"latitude": -29.9027, "longitude": -71.2519}]), use_container_width=True)
         template = pd.DataFrame(columns=["cliente","numero_bim","latitud","longitud","tipo_microalga"])
-        st.download_button(
-            "📥 Descargar plantilla de coordenadas (CSV)",
-            template.to_csv(index=False).encode("utf-8"),
-            file_name="plantilla_coordenadas_bims.csv",
-        )
-        st.caption("Carga latitud/longitud en MySQL (tabla biorreactores) y vuelve a esta vista.")
-    else:
-        # Mostrar con pydeck si está instalado, si no con st.map
-        try:
-            import pydeck as pdk
-            lat0 = float(df_map["latitud"].mean()); lon0 = float(df_map["longitud"].mean())
-            view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=9, pitch=0)
-            layer_points = pdk.Layer(
-                "ScatterplotLayer",
-                data=df_map,
-                get_position="[longitud, latitud]",
-                get_radius=150,
-                pickable=True,
-                get_fill_color=[0, 148, 255, 160],
-            )
-            layer_labels = pdk.Layer(
-                "TextLayer",
-                data=df_map,
-                get_position="[longitud, latitud]",
-                get_text="label",
-                get_size=14,
-                get_color=[255, 255, 255],
-                get_alignment_baseline="bottom",
-            )
-            deck = pdk.Deck(
-                layers=[layer_points, layer_labels],
-                initial_view_state=view,
-                map_style=None,
-                tooltip={"html": "<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"},
-            )
-            st.pydeck_chart(deck, use_container_width=True)
-        except Exception:
-            st.map(df_map.rename(columns={"latitud":"latitude","longitud":"longitude"})[["latitude","longitude"]],
-                   use_container_width=True)
+        st.download_button("📥 Descargar plantilla de coordenadas (CSV)",
+                           template.to_csv(index=False).encode("utf-8"),
+                           file_name="plantilla_coordenadas_bims.csv")
+        return
 
-        st.download_button(
-            "📥 Descargar paradas (CSV)",
-            df_map.rename(columns={"numero_bim":"bim"}).to_csv(index=False).encode("utf-8"),
-            file_name="paradas_bims.csv",
+    # Mostrar con pydeck si está; si no, st.map
+    try:
+        import pydeck as pdk
+        lat0 = float(df_map["latitud"].mean()); lon0 = float(df_map["longitud"].mean())
+        view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=9, pitch=0)
+        layer_points = pdk.Layer(
+            "ScatterplotLayer", data=df_map,
+            get_position="[longitud, latitud]", get_radius=150,
+            pickable=True, get_fill_color=[0, 148, 255, 160],
         )
+        layer_labels = pdk.Layer(
+            "TextLayer", data=df_map,
+            get_position="[longitud, latitud]", get_text="label",
+            get_size=14, get_color=[255,255,255], get_alignment_baseline="bottom",
+        )
+        deck = pdk.Deck(
+            layers=[layer_points, layer_labels],
+            initial_view_state=view, map_style=None,
+            tooltip={"html":"<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"},
+        )
+        st.pydeck_chart(deck, use_container_width=True)
+    except Exception:
+        st.map(df_map.rename(columns={"latitud":"latitude","longitud":"longitude"})[["latitude","longitude"]],
+               use_container_width=True)
+
+    st.download_button("📥 Descargar paradas (CSV)",
+                       df_map.rename(columns={"numero_bim":"bim"}).to_csv(index=False).encode("utf-8"),
+                       file_name="paradas_bims.csv")
 
 # ==========================================================
-# 🚦 ROUTING
+# 🚦 ROUTING (al final, para evitar NameError)
 # ==========================================================
 page = st.session_state.get("page", st.query_params.get("page", "home"))
 if page == "detail":
