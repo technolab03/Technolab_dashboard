@@ -128,47 +128,18 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
 
     cat["label"] = "BIM " + cat["numero_bim"].astype("string")
 
-    # Icono tipo emoji 🚜 usando imagen Twemoji
+    # Icono tipo emoji 🚜 Twemoji
     icon_cfg = {
-        "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",  # 🚜
+        "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",
         "width": 72,
         "height": 72,
         "anchorY": 72,
-        "size": 20,     # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< AQUÍ ESTÁ EL get_size QUE PEDISTE
+        "size": 20,        # <<<<<< tamaño solicitado
     }
 
     cat["icon_data"] = [icon_cfg] * len(cat)
 
     return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon_data"]]
-
-
-@st.cache_data(ttl=180)
-def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
-    return q("""
-        SELECT id, numero_bim, nombre_evento, fecha, comentarios
-        FROM fechas_BIMs
-        WHERE numero_bim = :bim AND fecha BETWEEN :d1 AND :d2
-        ORDER BY fecha DESC
-    """, {"bim": str(bim), "d1": d1, "d2": d2})
-
-@st.cache_data(ttl=180)
-def get_diagnosticos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
-    return q("""
-        SELECT d.id, d.usuario_id, d.PreguntaCliente, d.respuestaGPT, d.fecha
-        FROM diagnosticos d
-        WHERE d.usuario_id IN (SELECT r.usuario_id FROM registros r WHERE r.BIM = :bim)
-          AND d.fecha BETWEEN :d1 AND :d2
-        ORDER BY d.fecha DESC
-    """, {"bim": str(bim), "d1": d1, "d2": d2})
-
-@st.cache_data(ttl=180)
-def get_registros(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
-    return q("""
-        SELECT id, usuario_id, BIM, respuestaGPT, HEX, fecha
-        FROM registros
-        WHERE BIM = :bim AND fecha BETWEEN :d1 AND :d2
-        ORDER BY fecha DESC
-    """, {"bim": str(bim), "d1": d1, "d2": d2})
 
 # ==========================================================
 # KPIs
@@ -294,30 +265,28 @@ def view_map():
 
     import pydeck as pdk
 
-    # Centro y zoom dependen del filtro:
     if cliente_sel == "Todos":
         lat0 = float(df_map["latitud"].mean())
         lon0 = float(df_map["longitud"].mean())
-        zoom = 8  # vista general
+        zoom = 8
     else:
         lat0 = float(df_map["latitud"].mean())
         lon0 = float(df_map["longitud"].mean())
-        zoom = 12  # zoom más cercano al agricultor seleccionado
+        zoom = 12
 
     view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=zoom, pitch=0)
 
-    # Icono tipo emoji 🌱 (IconLayer, tamaño constante)
+    # IconLayer corregido (usa "size")
     layer_icon = pdk.Layer(
         "IconLayer",
         data=df_map,
         get_icon="icon_data",
         get_position="[longitud, latitud]",
         size_scale=15,
-        get_size=4,
+        get_size="size",      # <<<<<< AHORA SÍ toma el valor del icon_cfg
         pickable=True,
     )
 
-    # Etiqueta "BIM X" a la derecha del icono
     df_map["title"] = df_map["label"].astype(str)
     layer_label = pdk.Layer(
         "TextLayer",
@@ -334,7 +303,9 @@ def view_map():
     deck = pdk.Deck(
         layers=[layer_icon, layer_label],
         initial_view_state=view,
-        tooltip={"html": "<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"},
+        tooltip={
+            "html": "<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"
+        },
     )
     st.pydeck_chart(deck, use_container_width=True)
 
