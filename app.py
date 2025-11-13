@@ -134,7 +134,7 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
         "width": 72,
         "height": 72,
         "anchorY": 72,
-        "size": 30,        # <<<<<< tamaño solicitado (FUNCIONA)
+        "size": 50,        # <<<<<< tamaño solicitado (FUNCIONA)
     }
 
     cat["icon_data"] = [icon_cfg] * len(cat)
