@@ -131,9 +131,9 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     # Icono tipo emoji 🌱 usando una imagen (Twemoji)
     icon_cfg = {
       "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",  # 🚜
-      "width": 50,
-      "height": 50,
-      "anchorY": 50,
+      "width": 30,
+      "height": 30,
+      "anchorY": 30,
     }
 
     cat["icon_data"] = [icon_cfg] * len(cat)
