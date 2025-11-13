@@ -309,7 +309,7 @@ def view_map():
         get_icon="icon_data",
         get_position="[longitud, latitud]",
         size_scale=15,
-        get_size=5,   # ← aquí cambias el tamaño del 🚜 y con ttl=1 lo verás casi al instante
+        get_size=3,   # ← aquí cambias el tamaño del 🚜 y con ttl=1 lo verás casi al instante
         pickable=True,
     )
 
