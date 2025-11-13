@@ -130,11 +130,12 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
 
     # Icono tipo emoji 🌱 usando una imagen (Twemoji)
     icon_cfg = {
-        "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f331.png",  # 🌱
-        "width": 72,
-        "height": 72,
-        "anchorY": 72,
+      "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",  # 🚜
+      "width": 50,
+      "height": 50,
+      "anchorY": 50,
     }
+
     cat["icon_data"] = [icon_cfg] * len(cat)
 
     return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon_data"]]
