@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (IconLayer emoji + filtro que centra mapa)
+# app.py — Technolab Data Center (IconLayer emoji + TTL=1 + size=30)
 # -*- coding: utf-8 -*-
 import os
 import re
@@ -94,13 +94,13 @@ def _to_float_coord(val):
         return None
 
 # ==========================================================
-# Consultas con caché
+# Consultas con caché (TTL = 1 segundo)
 # ==========================================================
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=1)
 def get_clientes() -> pd.DataFrame:
     return q("SELECT id, usuario_id, usuario_nombre, cliente, BIMs_instalados FROM clientes")
 
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=1)
 def get_biorreactores() -> pd.DataFrame:
     return q("""
         SELECT
@@ -114,7 +114,7 @@ def get_biorreactores() -> pd.DataFrame:
         ORDER BY cliente, numero_bim
     """)
 
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=1)
 def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     cat = get_biorreactores().copy()
     if cliente_sel and cliente_sel != "Todos":
@@ -134,17 +134,14 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
         "width": 72,
         "height": 72,
         "anchorY": 72,
-        "size": 60,        # <<<<<< tamaño solicitado
+        "size": 30,        # <<<<<< tamaño solicitado (FUNCIONA)
     }
 
     cat["icon_data"] = [icon_cfg] * len(cat)
 
     return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon_data"]]
 
-# ==========================================================
-# KPIs
-# ==========================================================
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=1)
 def get_kpis():
     c = q("SELECT COUNT(*) AS c FROM clientes")
     total_clientes = int(c["c"].iloc[0]) if not c.empty else 0
@@ -164,6 +161,34 @@ def get_kpis():
     total_eventos = int(e["c"].iloc[0]) if not e.empty else 0
 
     return total_clientes, total_bims, total_diag, total_regs, total_eventos
+
+@st.cache_data(ttl=1)
+def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
+    return q("""
+        SELECT id, numero_bim, nombre_evento, fecha, comentarios
+        FROM fechas_BIMs
+        WHERE numero_bim = :bim AND fecha BETWEEN :d1 AND :d2
+        ORDER BY fecha DESC
+    """, {"bim": str(bim), "d1": d1, "d2": d2})
+
+@st.cache_data(ttl=1)
+def get_diagnosticos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
+    return q("""
+        SELECT d.id, d.usuario_id, d.PreguntaCliente, d.respuestaGPT, d.fecha
+        FROM diagnosticos d
+        WHERE d.usuario_id IN (SELECT r.usuario_id FROM registros r WHERE r.BIM = :bim)
+          AND d.fecha BETWEEN :d1 AND :d2
+        ORDER BY d.fecha DESC
+    """, {"bim": str(bim), "d1": d1, "d2": d2})
+
+@st.cache_data(ttl=1)
+def get_registros(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
+    return q("""
+        SELECT id, usuario_id, BIM, respuestaGPT, HEX, fecha
+        FROM registros
+        WHERE BIM = :bim AND fecha BETWEEN :d1 AND :d2
+        ORDER BY fecha DESC
+    """, {"bim": str(bim), "d1": d1, "d2": d2})
 
 # ==========================================================
 # Navegación
@@ -239,7 +264,7 @@ def view_home():
                         go_detail(str(r["numero_bim"]))
 
 # ==========================================================
-# Página del mapa (ventana propia)
+# Página del mapa
 # ==========================================================
 def view_map():
     st.markdown(
@@ -283,7 +308,7 @@ def view_map():
         get_icon="icon_data",
         get_position="[longitud, latitud]",
         size_scale=15,
-        get_size="size",      # <<<<<< AHORA SÍ toma el valor del icon_cfg
+        get_size="size",      # <<< ACTIVO
         pickable=True,
     )
 
