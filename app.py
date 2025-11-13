@@ -308,7 +308,7 @@ def view_map():
         data=df_map,
         get_icon="icon_data",
         get_position="[longitud, latitud]",
-        size_scale=15,
+        size_scale=30,
         get_size=10,   # ← aquí cambias el tamaño del 🚜 y con ttl=1 lo verás casi al instante
         pickable=True,
     )
