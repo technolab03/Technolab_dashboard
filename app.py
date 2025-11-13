@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (IconLayer emoji + TTL=1 + size=30)
+# app.py — Technolab Data Center (IconLayer 🚜 + filtro que centra + cache 1s para el mapa)
 # -*- coding: utf-8 -*-
 import os
 import re
@@ -94,12 +94,13 @@ def _to_float_coord(val):
         return None
 
 # ==========================================================
-# Consultas con caché (TTL = 1 segundo)
+# Consultas con caché
 # ==========================================================
-@st.cache_data(ttl=1)
+@st.cache_data(ttl=180)
 def get_clientes() -> pd.DataFrame:
     return q("SELECT id, usuario_id, usuario_nombre, cliente, BIMs_instalados FROM clientes")
 
+# ↓↓↓ biorreactores y mapa con TTL = 1s para ver cambios rápido ↓↓↓
 @st.cache_data(ttl=1)
 def get_biorreactores() -> pd.DataFrame:
     return q("""
@@ -128,20 +129,49 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
 
     cat["label"] = "BIM " + cat["numero_bim"].astype("string")
 
-    # Icono tipo emoji 🚜 Twemoji
+    # Icono tipo emoji 🚜 usando Twemoji
     icon_cfg = {
-        "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",
+        "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",  # 🚜
         "width": 72,
         "height": 72,
         "anchorY": 72,
-        "size": 50,        # <<<<<< tamaño solicitado (FUNCIONA)
     }
-
     cat["icon_data"] = [icon_cfg] * len(cat)
 
     return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon_data"]]
 
-@st.cache_data(ttl=1)
+@st.cache_data(ttl=180)
+def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
+    return q("""
+        SELECT id, numero_bim, nombre_evento, fecha, comentarios
+        FROM fechas_BIMs
+        WHERE numero_bim = :bim AND fecha BETWEEN :d1 AND :d2
+        ORDER BY fecha DESC
+    """, {"bim": str(bim), "d1": d1, "d2": d2})
+
+@st.cache_data(ttl=180)
+def get_diagnosticos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
+    return q("""
+        SELECT d.id, d.usuario_id, d.PreguntaCliente, d.respuestaGPT, d.fecha
+        FROM diagnosticos d
+        WHERE d.usuario_id IN (SELECT r.usuario_id FROM registros r WHERE r.BIM = :bim)
+          AND d.fecha BETWEEN :d1 AND :d2
+        ORDER BY d.fecha DESC
+    """, {"bim": str(bim), "d1": d1, "d2": d2})
+
+@st.cache_data(ttl=180)
+def get_registros(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
+    return q("""
+        SELECT id, usuario_id, BIM, respuestaGPT, HEX, fecha
+        FROM registros
+        WHERE BIM = :bim AND fecha BETWEEN :d1 AND :d2
+        ORDER BY fecha DESC
+    """, {"bim": str(bim), "d1": d1, "d2": d2})
+
+# ==========================================================
+# KPIs
+# ==========================================================
+@st.cache_data(ttl=180)
 def get_kpis():
     c = q("SELECT COUNT(*) AS c FROM clientes")
     total_clientes = int(c["c"].iloc[0]) if not c.empty else 0
@@ -161,34 +191,6 @@ def get_kpis():
     total_eventos = int(e["c"].iloc[0]) if not e.empty else 0
 
     return total_clientes, total_bims, total_diag, total_regs, total_eventos
-
-@st.cache_data(ttl=1)
-def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
-    return q("""
-        SELECT id, numero_bim, nombre_evento, fecha, comentarios
-        FROM fechas_BIMs
-        WHERE numero_bim = :bim AND fecha BETWEEN :d1 AND :d2
-        ORDER BY fecha DESC
-    """, {"bim": str(bim), "d1": d1, "d2": d2})
-
-@st.cache_data(ttl=1)
-def get_diagnosticos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
-    return q("""
-        SELECT d.id, d.usuario_id, d.PreguntaCliente, d.respuestaGPT, d.fecha
-        FROM diagnosticos d
-        WHERE d.usuario_id IN (SELECT r.usuario_id FROM registros r WHERE r.BIM = :bim)
-          AND d.fecha BETWEEN :d1 AND :d2
-        ORDER BY d.fecha DESC
-    """, {"bim": str(bim), "d1": d1, "d2": d2})
-
-@st.cache_data(ttl=1)
-def get_registros(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
-    return q("""
-        SELECT id, usuario_id, BIM, respuestaGPT, HEX, fecha
-        FROM registros
-        WHERE BIM = :bim AND fecha BETWEEN :d1 AND :d2
-        ORDER BY fecha DESC
-    """, {"bim": str(bim), "d1": d1, "d2": d2})
 
 # ==========================================================
 # Navegación
@@ -264,7 +266,7 @@ def view_home():
                         go_detail(str(r["numero_bim"]))
 
 # ==========================================================
-# Página del mapa
+# Página del mapa (ventana propia)
 # ==========================================================
 def view_map():
     st.markdown(
@@ -301,14 +303,13 @@ def view_map():
 
     view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=zoom, pitch=0)
 
-    # IconLayer corregido (usa "size")
     layer_icon = pdk.Layer(
         "IconLayer",
         data=df_map,
         get_icon="icon_data",
         get_position="[longitud, latitud]",
         size_scale=15,
-        get_size="size",      # <<< ACTIVO
+        get_size=10,   # ← aquí cambias el tamaño del 🚜 y con ttl=1 lo verás casi al instante
         pickable=True,
     )
 
@@ -328,9 +329,7 @@ def view_map():
     deck = pdk.Deck(
         layers=[layer_icon, layer_label],
         initial_view_state=view,
-        tooltip={
-            "html": "<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"
-        },
+        tooltip={"html": "<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"},
     )
     st.pydeck_chart(deck, use_container_width=True)
 
