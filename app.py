@@ -128,17 +128,19 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
 
     cat["label"] = "BIM " + cat["numero_bim"].astype("string")
 
-    # Icono tipo emoji 🌱 usando una imagen (Twemoji)
+    # Icono tipo emoji 🚜 usando imagen Twemoji
     icon_cfg = {
-      "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",  # 🚜
-      "width": 30,
-      "height": 30,
-      "anchorY": 30,
+        "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",  # 🚜
+        "width": 72,
+        "height": 72,
+        "anchorY": 72,
+        "size": 40,     # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< AQUÍ ESTÁ EL get_size QUE PEDISTE
     }
 
     cat["icon_data"] = [icon_cfg] * len(cat)
 
     return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon_data"]]
+
 
 @st.cache_data(ttl=180)
 def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
