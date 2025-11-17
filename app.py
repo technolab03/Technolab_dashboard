@@ -483,7 +483,7 @@ def view_map():
             "PathLayer",
             data=path_data,
             get_path="path",
-            get_width=300,
+            get_width=1000,
             get_color=[0, 255, 0],
             pickable=False,
         )
