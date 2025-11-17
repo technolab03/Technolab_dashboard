@@ -1,8 +1,11 @@
-# app.py — Technolab Data Center (IconLayer 🚜 + filtro que centra + cache 1s para el mapa)
+# app.py — Technolab Data Center (IconLayer 🚜 + ruta óptima con API ORS)
 # -*- coding: utf-8 -*-
 import os
 import re
+from math import radians, sin, cos, asin, sqrt
+
 import pandas as pd
+import requests
 import streamlit as st
 from sqlalchemy import create_engine, text, event
 from datetime import datetime, timedelta
@@ -92,6 +95,91 @@ def _to_float_coord(val):
         return float(m.group(0).replace(",", "."))
     except Exception:
         return None
+
+# --- Distancia y orden aproximado (para TSP básico) ---
+def haversine_km(lat1, lon1, lat2, lon2) -> float:
+    """Distancia aproximada en km entre dos puntos (lat, lon) usando haversine."""
+    R = 6371.0  # radio de la Tierra en km
+    lat1_r, lon1_r = radians(lat1), radians(lon1)
+    lat2_r, lon2_r = radians(lat2), radians(lon2)
+    dlat = lat2_r - lat1_r
+    dlon = lon2_r - lon1_r
+
+    a = sin(dlat / 2)**2 + cos(lat1_r) * cos(lat2_r) * sin(dlon / 2)**2
+    c = 2 * asin(sqrt(a))
+    return R * c
+
+def build_route_nearest_neighbor(df_points: pd.DataFrame) -> pd.DataFrame:
+    """
+    Recibe un DataFrame con columnas: cliente, numero_bim, latitud, longitud
+    Devuelve el mismo DataFrame ordenado según una ruta aproximada (nearest neighbor).
+    """
+    if df_points.empty or len(df_points) == 1:
+        return df_points.reset_index(drop=True)
+
+    remaining = df_points.copy().reset_index(drop=True)
+    route_rows = []
+
+    # Partimos desde el primer punto (puedes cambiar la lógica de partida si quieres)
+    current_idx = 0
+    route_rows.append(remaining.loc[current_idx])
+    remaining = remaining.drop(index=current_idx).reset_index(drop=True)
+
+    while not remaining.empty:
+        last_lat = route_rows[-1]["latitud"]
+        last_lon = route_rows[-1]["longitud"]
+
+        # Encontrar el más cercano
+        dists = remaining.apply(
+            lambda r: haversine_km(last_lat, last_lon, r["latitud"], r["longitud"]),
+            axis=1
+        )
+        next_idx = dists.idxmin()
+        route_rows.append(remaining.loc[next_idx])
+        remaining = remaining.drop(index=next_idx).reset_index(drop=True)
+
+    route_df = pd.DataFrame(route_rows).reset_index(drop=True)
+    return route_df
+
+def get_driving_route_ors(coords):
+    """
+    Llama a la API de OpenRouteService para obtener la ruta por carretera.
+    coords debe ser una lista de [lon, lat] en el orden de visita.
+    Devuelve (distancia_km, duracion_horas, geometria_coords) o (None, None, None) si hay error.
+    """
+    if "ors" not in st.secrets or "api_key" not in st.secrets["ors"]:
+        st.error("Falta configurar st.secrets['ors']['api_key'] con tu API Key de OpenRouteService.")
+        return None, None, None
+
+    api_key = st.secrets["ors"]["api_key"]
+    url = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
+
+    headers = {
+        "Authorization": api_key,
+        "Content-Type": "application/json",
+    }
+    body = {
+        "coordinates": coords,
+    }
+
+    try:
+        resp = requests.post(url, json=body, headers=headers, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        st.error(f"Error al llamar a la API de rutas: {e}")
+        return None, None, None
+
+    try:
+        feat = data["features"][0]
+        summary = feat["properties"]["summary"]
+        distancia_km = summary["distance"] / 1000.0      # metros → km
+        duracion_h  = summary["duration"] / 3600.0       # segundos → horas
+        geometria   = feat["geometry"]["coordinates"]    # lista [lon, lat]
+        return distancia_km, duracion_h, geometria
+    except Exception as e:
+        st.error(f"Respuesta inesperada de la API de rutas: {e}")
+        return None, None, None
 
 # ==========================================================
 # Consultas con caché
@@ -266,7 +354,7 @@ def view_home():
                         go_detail(str(r["numero_bim"]))
 
 # ==========================================================
-# Página del mapa (ventana propia)
+# Página del mapa (ventana propia) + ruta óptima real por carretera
 # ==========================================================
 def view_map():
     st.markdown(
@@ -276,43 +364,51 @@ def view_map():
     st.title("🌍 Mapa de Bioreactores")
 
     base = get_biorreactores()
-    clientes_opts = ["Todos"] + sorted(
-        [c for c in base["cliente"].dropna().astype("string").str.strip().unique().tolist() if c != ""]
-    )
-    cliente_sel = st.selectbox(
-        "Seleccionar agricultor (cliente) para centrar el mapa",
-        clientes_opts,
-        key="cliente_sel_map",
+    base["cliente"] = base["cliente"].astype("string").str.strip()
+
+    # --- Selección múltiple de agricultores ---
+    clientes_unicos = sorted([c for c in base["cliente"].dropna().unique().tolist() if c != ""])
+    clientes_sel = st.multiselect(
+        "Seleccionar agricultores (clientes) para visualizar",
+        clientes_unicos,
+        default=clientes_unicos,
+        key="clientes_sel_map",
     )
 
-    df_map = get_map_df(cliente_sel)
+    if not clientes_sel:
+        st.info("Selecciona al menos un agricultor para visualizar en el mapa.")
+        return
+
+    # Dataframe de bioreactores filtrado por los clientes seleccionados
+    df_map = get_map_df()  # sin filtro para poder aplicar varios clientes
+    df_map["cliente"] = df_map["cliente"].astype("string").str.strip()
+    df_map = df_map[df_map["cliente"].isin(clientes_sel)]
+
     if df_map.empty:
-        st.info("No existen coordenadas registradas para los bioreactores seleccionados.")
+        st.info("No existen coordenadas registradas para los bioreactores de los agricultores seleccionados.")
         return
 
     import pydeck as pdk
 
-    if cliente_sel == "Todos":
-        lat0 = float(df_map["latitud"].mean())
-        lon0 = float(df_map["longitud"].mean())
-        zoom = 8
-    else:
-        lat0 = float(df_map["latitud"].mean())
-        lon0 = float(df_map["longitud"].mean())
-        zoom = 12
+    # Centro del mapa según los BIMs filtrados
+    lat0 = float(df_map["latitud"].mean())
+    lon0 = float(df_map["longitud"].mean())
+    zoom = 8 if len(clientes_sel) > 1 else 12
 
     view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=zoom, pitch=0)
 
+    # Capa de iconos 🚜
     layer_icon = pdk.Layer(
         "IconLayer",
         data=df_map,
         get_icon="icon_data",
         get_position="[longitud, latitud]",
         size_scale=15,
-        get_size=2,   # ← aquí cambias el tamaño del 🚜 y con ttl=1 lo verás casi al instante
+        get_size=2,
         pickable=True,
     )
 
+    # Capa de labels "BIM X"
     df_map["title"] = df_map["label"].astype(str)
     layer_label = pdk.Layer(
         "TextLayer",
@@ -326,8 +422,75 @@ def view_map():
         get_pixel_offset=[18, 0],
     )
 
+    # --- Planificador de ruta por carretera (API ORS) ---
+    st.subheader("🧭 Planificador de ruta por carretera (OpenRouteService)")
+
+    # Seleccionar BIMs específicos dentro de los clientes filtrados
+    df_map["numero_bim"] = df_map["numero_bim"].astype("string")
+    bims_disponibles = sorted(df_map["numero_bim"].unique().tolist())
+    bims_sel = st.multiselect(
+        "Selecciona los BIMs que quieres incluir en la ruta",
+        options=bims_disponibles,
+        default=bims_disponibles,
+        key="bims_sel_ruta",
+    )
+
+    calcular_ruta = st.button("Calcular ruta óptima aproximada y trazado real por carretera")
+
+    route_df = None
+    ruta_coords = None
+    distancia_km = None
+    duracion_h = None
+
+    if calcular_ruta:
+        stops = (
+            df_map[df_map["numero_bim"].isin(bims_sel)][["cliente", "numero_bim", "latitud", "longitud"]]
+            .drop_duplicates()
+            .reset_index(drop=True)
+        )
+
+        if len(stops) < 2:
+            st.info("Se necesita al menos 2 BIMs para calcular una ruta.")
+        else:
+            # 1) Orden aproximado (heurística vecino más cercano) con haversine
+            route_df = build_route_nearest_neighbor(stops)
+
+            # 2) Coordenadas en el orden calculado para la API de rutas (lon, lat)
+            coords = [
+                [float(row["longitud"]), float(row["latitud"])]
+                for _, row in route_df.iterrows()
+            ]
+
+            # 3) Ruta real por carretera con ORS
+            distancia_km, duracion_h, ruta_coords = get_driving_route_ors(coords)
+
+            if distancia_km is not None and duracion_h is not None and ruta_coords:
+                st.metric("Distancia total por carretera (km)", f"{distancia_km:,.1f}")
+                st.metric("Tiempo total estimado (horas)", f"{duracion_h:,.2f}")
+
+                st.markdown("**Orden sugerido de visita (después de optimización aproximada):**")
+                st.dataframe(
+                    route_df[["cliente", "numero_bim", "latitud", "longitud"]],
+                    use_container_width=True,
+                )
+
+    # --- Capas del mapa (iconos + etiquetas + ruta si existe) ---
+    layers = [layer_icon, layer_label]
+
+    if ruta_coords:
+        path_data = [{"path": ruta_coords}]
+        layer_path = pdk.Layer(
+            "PathLayer",
+            data=path_data,
+            get_path="path",
+            get_width=6,
+            get_color=[0, 255, 0],
+            pickable=False,
+        )
+        layers.append(layer_path)
+
     deck = pdk.Deck(
-        layers=[layer_icon, layer_label],
+        layers=layers,
         initial_view_state=view,
         tooltip={"html": "<b>{label}</b><br/>Cliente: {cliente}<br/>Microalga: {tipo_microalga}"},
     )
