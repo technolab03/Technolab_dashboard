@@ -485,7 +485,7 @@ def view_map():
       get_path="path",
       width_scale=1,              # escala general del ancho
       width_min_pixels=8,         # grosor mínimo en píxeles (siempre visible)
-      get_width=50,               # grosor base (ajústalo libremente)
+      get_width=35,               # grosor base (ajústalo libremente)
       get_color=[0, 255, 0],      # verde brillante
       pickable=False,
 )
