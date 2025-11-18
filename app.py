@@ -356,6 +356,9 @@ def view_home():
 # ==========================================================
 # Página del mapa (ventana propia) + ruta óptima real por carretera
 # ==========================================================
+# ==========================================================
+# Página del mapa (ventana propia) + ruta óptima real por carretera
+# ==========================================================
 def view_map():
     st.markdown(
         '<a class="btn-link" href="?page=home" target="_self">⬅️ Volver al Panel General</a>',
@@ -363,41 +366,36 @@ def view_map():
     )
     st.title("🌍 Mapa de Bioreactores")
 
-    base = get_biorreactores()
-    base["cliente"] = base["cliente"].astype("string").str.strip()
-
-    # --- Selección múltiple de agricultores ---
-    clientes_unicos = sorted([c for c in base["cliente"].dropna().unique().tolist() if c != ""])
-    clientes_sel = st.multiselect(
-        "Seleccionar agricultores (clientes) para visualizar",
-        clientes_unicos,
-        default=clientes_unicos,
-        key="clientes_sel_map",
-    )
-
-    if not clientes_sel:
-        st.info("Selecciona al menos un agricultor para visualizar en el mapa.")
-        return
-
-    # Dataframe de bioreactores filtrado por los clientes seleccionados
-    df_map = get_map_df()  # sin filtro para poder aplicar varios clientes
-    df_map["cliente"] = df_map["cliente"].astype("string").str.strip()
-    df_map = df_map[df_map["cliente"].isin(clientes_sel)]
-
+    # Cargamos TODOS los BIMs para el mapa
+    df_map = get_map_df()  # sin filtros por cliente
     if df_map.empty:
-        st.info("No existen coordenadas registradas para los bioreactores de los agricultores seleccionados.")
+        st.info("No existen coordenadas registradas para los bioreactores.")
         return
 
     import pydeck as pdk
 
-    # Centro del mapa según los BIMs filtrados
-    lat0 = float(df_map["latitud"].mean())
-    lon0 = float(df_map["longitud"].mean())
-    zoom = 8 if len(clientes_sel) > 1 else 12
+    df_map["cliente"] = df_map["cliente"].astype("string").str.strip()
+    df_map["numero_bim"] = df_map["numero_bim"].astype("string")
+
+    # ==========
+    # 1) Selector de BIM SOLO para centrar el mapa
+    # ==========
+    bims_opts = sorted(df_map["numero_bim"].unique().tolist())
+    bim_focus = st.selectbox(
+        "Selecciona el BIM para centrar el mapa",
+        options=bims_opts,
+        key="bim_focus_map",
+    )
+
+    # Fila del BIM elegido para centrar
+    focus_row = df_map[df_map["numero_bim"] == bim_focus].iloc[0]
+    lat0 = float(focus_row["latitud"])
+    lon0 = float(focus_row["longitud"])
+    zoom = 12  # zoom fijo centrado en el BIM seleccionado
 
     view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=zoom, pitch=0)
 
-    # Capa de iconos 🚜
+    # Capa de iconos 🚜 (se muestran TODOS los BIMs)
     layer_icon = pdk.Layer(
         "IconLayer",
         data=df_map,
@@ -422,16 +420,15 @@ def view_map():
         get_pixel_offset=[18, 0],
     )
 
-    # --- Planificador de ruta por carretera (API ORS) ---
+    # ==========
+    # 2) Planificador de ruta por carretera (independiente del selector de BIM)
+    # ==========
     st.subheader("🧭 Planificador de ruta por carretera (OpenRouteService)")
 
-    # Seleccionar BIMs específicos dentro de los clientes filtrados
-    df_map["numero_bim"] = df_map["numero_bim"].astype("string")
     bims_disponibles = sorted(df_map["numero_bim"].unique().tolist())
     bims_sel = st.multiselect(
         "Selecciona los BIMs que quieres incluir en la ruta",
         options=bims_disponibles,
-        default=bims_disponibles,
         key="bims_sel_ruta",
     )
 
@@ -474,22 +471,23 @@ def view_map():
                     use_container_width=True,
                 )
 
-    # --- Capas del mapa (iconos + etiquetas + ruta si existe) ---
+    # ==========
+    # 3) Capas del mapa (iconos + etiquetas + ruta si existe)
+    # ==========
     layers = [layer_icon, layer_label]
 
     if ruta_coords:
         path_data = [{"path": ruta_coords}]
         layer_path = pdk.Layer(
-      "PathLayer",
-      data=path_data,
-      get_path="path",
-      width_scale=0.5,              # escala general del ancho
-      width_min_pixels=8,         # grosor mínimo en píxeles (siempre visible)
-      get_width=35,               # grosor base (ajústalo libremente)
-      get_color=[0, 255, 0],      # verde brillante
-      pickable=False,
-)
-
+            "PathLayer",
+            data=path_data,
+            get_path="path",
+            width_scale=0.5,        # escala general del ancho
+            width_min_pixels=8,     # grosor mínimo en píxeles (siempre visible)
+            get_width=35,           # grosor base
+            get_color=[0, 255, 0],  # verde brillante
+            pickable=False,
+        )
         layers.append(layer_path)
 
     deck = pdk.Deck(
