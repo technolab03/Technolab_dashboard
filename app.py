@@ -452,7 +452,7 @@ def view_map():
     )
 
     # 2) Planificador de ruta por carretera (independiente del selector de BIM)
-    st.subheader("🧭 Planificador de ruta por carretera (OpenRouteService)")
+    st.subheader("🧭 Planificador de ruta")
 
     # Dejamos que el usuario decida si Matriz entra o no a la ruta.
     bims_disponibles = sorted(df_map["numero_bim"].unique().tolist())
@@ -462,7 +462,7 @@ def view_map():
         key="bims_sel_ruta",
     )
 
-    calcular_ruta = st.button("Calcular ruta óptima aproximada y trazado real por carretera")
+    calcular_ruta = st.button("Calcular ruta óptima aproximada")
 
     route_df = None
     ruta_coords = None
