@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (IconLayer 🚜 + ruta óptima con API ORS)
+# app.py — Technolab Data Center (IconLayer 🚜 + ruta óptima con API ORS + ORIGEN)
 # -*- coding: utf-8 -*-
 import os
 import re
@@ -11,6 +11,13 @@ from sqlalchemy import create_engine, text, event
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Technolab Data Center", page_icon="🧪", layout="wide")
+
+# ==========================================================
+# Casa Matriz Tecnolab — ORIGEN (punto 0)
+# ==========================================================
+# Coordenadas aproximadas para Apóstol Santiago 4198, La Serena
+ORIGIN_LAT = -29.9027
+ORIGIN_LON = -71.2520
 
 # ==========================================================
 # Estilos
@@ -205,6 +212,10 @@ def get_biorreactores() -> pd.DataFrame:
 
 @st.cache_data(ttl=1)
 def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
+    """
+    Devuelve el catálogo de BIMs SOLO para el mapa.
+    Aquí se inyecta el BIM sintético 'ORIGEN' (Casa Matriz Tecnolab).
+    """
     cat = get_biorreactores().copy()
     if cliente_sel and cliente_sel != "Todos":
         cat = cat[cat["cliente"].fillna("").str.strip() == cliente_sel]
@@ -212,11 +223,9 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     cat["latitud"]  = cat["latitud"].map(_to_float_coord)
     cat["longitud"] = cat["longitud"].map(_to_float_coord)
     cat = cat.dropna(subset=["latitud","longitud"])
-    if cat.empty:
-        return cat
 
-    cat["label"] = "BIM " + cat["numero_bim"].astype("string")
-
+    # Si no hay nada, igual devolvemos solo el ORIGEN
+    # para que el mapa no quede vacío.
     # Icono tipo emoji 🚜 usando Twemoji
     icon_cfg = {
         "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",  # 🚜
@@ -224,7 +233,26 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
         "height": 72,
         "anchorY": 72,
     }
-    cat["icon_data"] = [icon_cfg] * len(cat)
+
+    if cat.empty:
+        cat = pd.DataFrame(columns=["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon_data"])
+
+    # Campos normales de los BIMs de la base
+    if not cat.empty:
+        cat["label"] = "BIM " + cat["numero_bim"].astype("string")
+        cat["icon_data"] = [icon_cfg] * len(cat)
+
+    # --- Agregar BIM sintético ORIGEN (Casa Matriz Tecnolab) ---
+    origin_row = {
+        "cliente": "Casa Matriz Tecnolab",
+        "numero_bim": "ORIGEN",
+        "latitud": ORIGIN_LAT,
+        "longitud": ORIGIN_LON,
+        "tipo_microalga": None,
+        "label": "ORIGEN",
+        "icon_data": icon_cfg,
+    }
+    cat = pd.concat([cat, pd.DataFrame([origin_row])], ignore_index=True)
 
     return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon_data"]]
 
@@ -363,7 +391,7 @@ def view_map():
     )
     st.title("🌍 Mapa de Bioreactores")
 
-    # Usamos TODOS los BIMs para el mapa
+    # Usamos TODOS los BIMs (incluye ORIGEN sintético)
     df_map = get_map_df()  # sin filtros
     if df_map.empty:
         st.info("No existen coordenadas registradas para los bioreactores.")
@@ -374,17 +402,16 @@ def view_map():
     df_map["cliente"] = df_map["cliente"].astype("string").str.strip()
     df_map["numero_bim"] = df_map["numero_bim"].astype("string")
 
-    # 1) Selector de UN BIM solo para centrar el mapa
+    # 1) Selector de UN BIM solo para centrar el mapa (incluye ORIGEN)
     bims_opts = sorted(df_map["numero_bim"].unique().tolist())
     bim_focus = st.selectbox(
-        "Selecciona el BIM para centrar el mapa",
+        "Selecciona el BIM para centrar el mapa (incluye ORIGEN)",
         options=bims_opts,
         key="bim_focus_map",
     )
 
     focus_rows = df_map[df_map["numero_bim"] == bim_focus]
     if focus_rows.empty:
-        # fallback: centro promedio si por alguna razón no se encuentra
         lat0 = float(df_map["latitud"].mean())
         lon0 = float(df_map["longitud"].mean())
     else:
@@ -393,10 +420,9 @@ def view_map():
         lon0 = float(focus_row["longitud"])
 
     zoom = 12
-
     view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=zoom, pitch=0)
 
-    # Capa de iconos 🚜 (todos los BIMs)
+    # Capa de iconos 🚜 (todos los BIMs, + ORIGEN)
     layer_icon = pdk.Layer(
         "IconLayer",
         data=df_map,
@@ -407,7 +433,7 @@ def view_map():
         pickable=True,
     )
 
-    # Capa de labels "BIM X"
+    # Capa de labels "BIM X" y "ORIGEN"
     df_map["title"] = df_map["label"].astype(str)
     layer_label = pdk.Layer(
         "TextLayer",
@@ -424,9 +450,11 @@ def view_map():
     # 2) Planificador de ruta por carretera (independiente del selector de BIM)
     st.subheader("🧭 Planificador de ruta por carretera (OpenRouteService)")
 
+    # IMPORTANTE:
+    # Dejamos que el usuario decida si ORIGEN entra o no a la ruta.
     bims_disponibles = sorted(df_map["numero_bim"].unique().tolist())
     bims_sel = st.multiselect(
-        "Selecciona los BIMs que quieres incluir en la ruta",
+        "Selecciona los BIMs que quieres incluir en la ruta (puedes incluir ORIGEN si quieres partir desde la casa matriz)",
         options=bims_disponibles,
         key="bims_sel_ruta",
     )
@@ -446,7 +474,7 @@ def view_map():
         )
 
         if len(stops) < 2:
-            st.info("Se necesita al menos 2 BIMs para calcular una ruta.")
+            st.info("Se necesita al menos 2 puntos (por ejemplo ORIGEN + 1 BIM) para calcular una ruta.")
         else:
             # 1) Orden aproximado (heurística vecino más cercano) con haversine
             route_df = build_route_nearest_neighbor(stops)
@@ -482,16 +510,13 @@ def view_map():
 
         path_data = [{"path": clean_coords}]
         layer_path = pdk.Layer(
-      "PathLayer",
-      data=path_data,
-      get_path="path",
-      width_scale=0.5,              # escala general del ancho
-      width_min_pixels=8,         # grosor mínimo en píxeles (siempre visible)
-      get_width=35,               # grosor base (ajústalo libremente)
-      get_color=[0, 255, 0],      # verde brillante
-      pickable=False,
-  )
-
+            "PathLayer",
+            data=path_data,
+            get_path="path",
+            get_width=18,            # línea gruesa y visible
+            get_color=[0, 255, 0],   # verde brillante
+            pickable=False,
+        )
         layers.append(layer_path)
 
     deck = pdk.Deck(
@@ -591,4 +616,3 @@ else:
     view_home()
 
 st.caption("© Technolab — Sistema de Gestión y Monitoreo de Bioreactores.")
-
