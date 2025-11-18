@@ -473,13 +473,19 @@ def view_map():
     # 3) Capas del mapa (iconos + etiquetas + ruta si existe)
     layers = [layer_icon, layer_label]
 
-    if ruta_coords:
-        path_data = [{"path": ruta_coords}]
+    if ruta_coords is not None:
+        # Aseguramos que todas las coords sean floats simples
+        clean_coords = [
+            [float(lon), float(lat)]
+            for lon, lat in ruta_coords
+        ]
+
+        path_data = [{"path": clean_coords}]
         layer_path = pdk.Layer(
             "PathLayer",
             data=path_data,
             get_path="path",
-            get_width=60,            # línea gruesa y estable
+            get_width=18,            # más gruesa que la original, pero razonable
             get_color=[0, 255, 0],   # verde brillante
             pickable=False,
         )
