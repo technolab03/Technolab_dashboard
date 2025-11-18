@@ -479,6 +479,12 @@ def view_map():
         if len(stops) < 2:
             st.info("Se necesita al menos 2 puntos (por ejemplo Matriz + 1 BIM) para calcular una ruta.")
         else:
+            # --- NUEVO: si Matriz está incluida, siempre será el primer punto de la ruta ---
+            if "Matriz" in stops["numero_bim"].values:
+                matriz_df = stops[stops["numero_bim"] == "Matriz"]
+                otros_df = stops[stops["numero_bim"] != "Matriz"]
+                stops = pd.concat([matriz_df, otros_df], ignore_index=True)
+
             # 1) Orden aproximado (heurística vecino más cercano) con haversine
             route_df = build_route_nearest_neighbor(stops)
 
