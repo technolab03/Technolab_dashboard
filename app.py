@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="Technolab Data Center", page_icon="🧪", layout="wide")
 
 # ==========================================================
-# Casa Matriz Tecnolab — MATRIZ (punto 0)
+# Casa Matriz Technolab — MATRIZ (punto 0)
 # ==========================================================
 # Coordenadas aproximadas para Apóstol Santiago 4198, La Serena
 ORIGIN_LAT = -29.947648
@@ -214,7 +214,7 @@ def get_biorreactores() -> pd.DataFrame:
 def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     """
     Devuelve el catálogo de BIMs SOLO para el mapa.
-    Aquí se inyecta el BIM sintético 'Matriz' (Casa Matriz Tecnolab).
+    Aquí se inyecta el BIM sintético 'Matriz' (Casa Matriz Technolab).
     """
     cat = get_biorreactores().copy()
     if cliente_sel and cliente_sel != "Todos":
@@ -246,9 +246,9 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
         cat["label"] = "BIM " + cat["numero_bim"].astype("string")
         cat["icon_data"] = [tractor_icon_cfg] * len(cat)
 
-    # --- Agregar BIM sintético MATRIZ (Casa Matriz Tecnolab) ---
+    # --- Agregar BIM sintético MATRIZ (Casa Matriz Technolab) ---
     matriz_row = {
-        "cliente": "Casa Matriz Tecnolab",
+        "cliente": "Casa Matriz Technolab",
         "numero_bim": "Matriz",
         "latitud": ORIGIN_LAT,
         "longitud": ORIGIN_LON,
@@ -479,7 +479,7 @@ def view_map():
         if len(stops) < 2:
             st.info("Se necesita al menos 2 puntos (por ejemplo Matriz + 1 BIM) para calcular una ruta.")
         else:
-            # --- NUEVO: si Matriz está incluida, siempre será el primer punto de la ruta ---
+            # Si Matriz está incluida, siempre será el primer punto de la ruta
             if "Matriz" in stops["numero_bim"].values:
                 matriz_df = stops[stops["numero_bim"] == "Matriz"]
                 otros_df = stops[stops["numero_bim"] != "Matriz"]
