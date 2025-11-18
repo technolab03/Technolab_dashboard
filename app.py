@@ -498,8 +498,12 @@ def view_map():
             distancia_km, duracion_h, ruta_coords = get_driving_route_ors(coords)
 
             if distancia_km is not None and duracion_h is not None and ruta_coords:
-                st.metric("Distancia total por carretera (km)", f"{distancia_km:,.1f}")
-                st.metric("Tiempo total estimado (horas)", f"{duracion_h:,.2f}")
+                # MÉTRICAS LADO A LADO
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Distancia total por carretera (km)", f"{distancia_km:,.1f}")
+                with col2:
+                    st.metric("Tiempo total estimado (horas)", f"{duracion_h:,.2f}")
 
                 st.markdown("**Orden sugerido de visita (después de optimización aproximada):**")
                 st.dataframe(
@@ -519,15 +523,15 @@ def view_map():
 
         path_data = [{"path": clean_coords}]
         layer_path = pdk.Layer(
-          "PathLayer",
-          data=path_data,
-          get_path="path",
-          width_scale=0.4,              # escala general del ancho
-          width_min_pixels=8,           # grosor mínimo en píxeles (siempre visible)
-          get_width=30,                 # grosor base
-          get_color=[0, 255, 0],        # verde brillante
-          pickable=False,
-      )
+            "PathLayer",
+            data=path_data,
+            get_path="path",
+            width_scale=0.4,              # escala general del ancho
+            width_min_pixels=8,           # grosor mínimo en píxeles (siempre visible)
+            get_width=30,                 # grosor base
+            get_color=[0, 255, 0],        # verde brillante
+            pickable=False,
+        )
         layers.append(layer_path)
 
     deck = pdk.Deck(
