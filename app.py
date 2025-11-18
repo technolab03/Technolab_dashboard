@@ -356,9 +356,6 @@ def view_home():
 # ==========================================================
 # Página del mapa (ventana propia) + ruta óptima real por carretera
 # ==========================================================
-# ==========================================================
-# Página del mapa (ventana propia) + ruta óptima real por carretera
-# ==========================================================
 def view_map():
     st.markdown(
         '<a class="btn-link" href="?page=home" target="_self">⬅️ Volver al Panel General</a>',
@@ -366,8 +363,8 @@ def view_map():
     )
     st.title("🌍 Mapa de Bioreactores")
 
-    # Cargamos TODOS los BIMs para el mapa
-    df_map = get_map_df()  # sin filtros por cliente
+    # Usamos TODOS los BIMs para el mapa
+    df_map = get_map_df()  # sin filtros
     if df_map.empty:
         st.info("No existen coordenadas registradas para los bioreactores.")
         return
@@ -377,9 +374,7 @@ def view_map():
     df_map["cliente"] = df_map["cliente"].astype("string").str.strip()
     df_map["numero_bim"] = df_map["numero_bim"].astype("string")
 
-    # ==========
-    # 1) Selector de BIM SOLO para centrar el mapa
-    # ==========
+    # 1) Selector de UN BIM solo para centrar el mapa
     bims_opts = sorted(df_map["numero_bim"].unique().tolist())
     bim_focus = st.selectbox(
         "Selecciona el BIM para centrar el mapa",
@@ -387,15 +382,21 @@ def view_map():
         key="bim_focus_map",
     )
 
-    # Fila del BIM elegido para centrar
-    focus_row = df_map[df_map["numero_bim"] == bim_focus].iloc[0]
-    lat0 = float(focus_row["latitud"])
-    lon0 = float(focus_row["longitud"])
-    zoom = 12  # zoom fijo centrado en el BIM seleccionado
+    focus_rows = df_map[df_map["numero_bim"] == bim_focus]
+    if focus_rows.empty:
+        # fallback: centro promedio si por alguna razón no se encuentra
+        lat0 = float(df_map["latitud"].mean())
+        lon0 = float(df_map["longitud"].mean())
+    else:
+        focus_row = focus_rows.iloc[0]
+        lat0 = float(focus_row["latitud"])
+        lon0 = float(focus_row["longitud"])
+
+    zoom = 12
 
     view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=zoom, pitch=0)
 
-    # Capa de iconos 🚜 (se muestran TODOS los BIMs)
+    # Capa de iconos 🚜 (todos los BIMs)
     layer_icon = pdk.Layer(
         "IconLayer",
         data=df_map,
@@ -420,9 +421,7 @@ def view_map():
         get_pixel_offset=[18, 0],
     )
 
-    # ==========
     # 2) Planificador de ruta por carretera (independiente del selector de BIM)
-    # ==========
     st.subheader("🧭 Planificador de ruta por carretera (OpenRouteService)")
 
     bims_disponibles = sorted(df_map["numero_bim"].unique().tolist())
@@ -471,9 +470,7 @@ def view_map():
                     use_container_width=True,
                 )
 
-    # ==========
     # 3) Capas del mapa (iconos + etiquetas + ruta si existe)
-    # ==========
     layers = [layer_icon, layer_label]
 
     if ruta_coords:
@@ -482,10 +479,8 @@ def view_map():
             "PathLayer",
             data=path_data,
             get_path="path",
-            width_scale=0.5,        # escala general del ancho
-            width_min_pixels=8,     # grosor mínimo en píxeles (siempre visible)
-            get_width=35,           # grosor base
-            get_color=[0, 255, 0],  # verde brillante
+            get_width=60,            # línea gruesa y estable
+            get_color=[0, 255, 0],   # verde brillante
             pickable=False,
         )
         layers.append(layer_path)
@@ -587,3 +582,4 @@ else:
     view_home()
 
 st.caption("© Technolab — Sistema de Gestión y Monitoreo de Bioreactores.")
+
