@@ -1,4 +1,4 @@
-# app.py — Technolab Data Center (IconLayer 🚜 + ruta óptima con API ORS + ORIGEN)
+# app.py — Technolab Data Center (IconLayer 🚜 + ruta óptima con API ORS + MATRIZ)
 # -*- coding: utf-8 -*-
 import os
 import re
@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="Technolab Data Center", page_icon="🧪", layout="wide")
 
 # ==========================================================
-# Casa Matriz Tecnolab — ORIGEN (punto 0)
+# Casa Matriz Tecnolab — MATRIZ (punto 0)
 # ==========================================================
 # Coordenadas aproximadas para Apóstol Santiago 4198, La Serena
 ORIGIN_LAT = -29.9027
@@ -214,7 +214,7 @@ def get_biorreactores() -> pd.DataFrame:
 def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     """
     Devuelve el catálogo de BIMs SOLO para el mapa.
-    Aquí se inyecta el BIM sintético 'ORIGEN' (Casa Matriz Tecnolab).
+    Aquí se inyecta el BIM sintético 'Matriz' (Casa Matriz Tecnolab).
     """
     cat = get_biorreactores().copy()
     if cliente_sel and cliente_sel != "Todos":
@@ -224,11 +224,15 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     cat["longitud"] = cat["longitud"].map(_to_float_coord)
     cat = cat.dropna(subset=["latitud","longitud"])
 
-    # Si no hay nada, igual devolvemos solo el ORIGEN
-    # para que el mapa no quede vacío.
-    # Icono tipo emoji 🚜 usando Twemoji
-    icon_cfg = {
+    # Iconos Twemoji
+    tractor_icon_cfg = {
         "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",  # 🚜
+        "width": 72,
+        "height": 72,
+        "anchorY": 72,
+    }
+    matriz_icon_cfg = {
+        "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f3e0.png",  # 🏠 casa
         "width": 72,
         "height": 72,
         "anchorY": 72,
@@ -240,19 +244,19 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     # Campos normales de los BIMs de la base
     if not cat.empty:
         cat["label"] = "BIM " + cat["numero_bim"].astype("string")
-        cat["icon_data"] = [icon_cfg] * len(cat)
+        cat["icon_data"] = [tractor_icon_cfg] * len(cat)
 
-    # --- Agregar BIM sintético ORIGEN (Casa Matriz Tecnolab) ---
-    origin_row = {
+    # --- Agregar BIM sintético MATRIZ (Casa Matriz Tecnolab) ---
+    matriz_row = {
         "cliente": "Casa Matriz Tecnolab",
-        "numero_bim": "ORIGEN",
+        "numero_bim": "Matriz",
         "latitud": ORIGIN_LAT,
         "longitud": ORIGIN_LON,
         "tipo_microalga": None,
-        "label": "ORIGEN",
-        "icon_data": icon_cfg,
+        "label": "Matriz",
+        "icon_data": matriz_icon_cfg,
     }
-    cat = pd.concat([cat, pd.DataFrame([origin_row])], ignore_index=True)
+    cat = pd.concat([cat, pd.DataFrame([matriz_row])], ignore_index=True)
 
     return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon_data"]]
 
@@ -342,7 +346,7 @@ def view_home():
     tc, tb, td, tr, te = get_kpis()
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("Clientes activos", tc)
-    k2.metric("Bioreactores operativos", tb)
+    k2.metric("Biorreactores operativos", tb)
     k3.metric("Diagnósticos registrados", td)
     k4.metric("Registros de datos", tr)
     k5.metric("Eventos asociados", te)
@@ -357,18 +361,18 @@ def view_home():
     )
     cliente_sel = st.sidebar.selectbox("Cliente", clientes_opts, key="cliente_sel_home")
 
-    if st.sidebar.button("🌍 Abrir mapa de bioreactores"):
+    if st.sidebar.button("🌍 Abrir mapa de biorreactores"):
         go_map()
 
-    # --- Listado de bioreactores ---
+    # --- Listado de biorreactores ---
     st.divider()
-    st.subheader("📋 Listado de Bioreactores")
+    st.subheader("📋 Listado de biorreactores")
 
     if cliente_sel != "Todos":
         bio_df = bio_df[bio_df["cliente"].fillna("").str.strip() == cliente_sel]
 
     if bio_df.empty:
-        st.warning("No se encontraron bioreactores para el filtro aplicado.")
+        st.warning("No se encontraron biorreactores para el filtro aplicado.")
     else:
         for cliente, grp in bio_df.groupby(bio_df["cliente"].fillna("").str.strip(), dropna=False):
             if cliente:
@@ -389,12 +393,12 @@ def view_map():
         '<a class="btn-link" href="?page=home" target="_self">⬅️ Volver al Panel General</a>',
         unsafe_allow_html=True,
     )
-    st.title("🌍 Mapa de Bioreactores")
+    st.title("🌍 Mapa de biorreactores")
 
-    # Usamos TODOS los BIMs (incluye ORIGEN sintético)
+    # Usamos TODOS los BIMs (incluye MATRIZ sintética)
     df_map = get_map_df()  # sin filtros
     if df_map.empty:
-        st.info("No existen coordenadas registradas para los bioreactores.")
+        st.info("No existen coordenadas registradas para los biorreactores.")
         return
 
     import pydeck as pdk
@@ -402,10 +406,10 @@ def view_map():
     df_map["cliente"] = df_map["cliente"].astype("string").str.strip()
     df_map["numero_bim"] = df_map["numero_bim"].astype("string")
 
-    # 1) Selector de UN BIM solo para centrar el mapa (incluye ORIGEN)
+    # 1) Selector de UN BIM solo para centrar el mapa (incluye MATRIZ)
     bims_opts = sorted(df_map["numero_bim"].unique().tolist())
     bim_focus = st.selectbox(
-        "Selecciona el BIM para centrar el mapa (incluye ORIGEN)",
+        "Selecciona el BIM para centrar el mapa (incluye Matriz)",
         options=bims_opts,
         key="bim_focus_map",
     )
@@ -422,7 +426,7 @@ def view_map():
     zoom = 12
     view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=zoom, pitch=0)
 
-    # Capa de iconos 🚜 (todos los BIMs, + ORIGEN)
+    # Capa de iconos (biorreactores + Matriz 🏠)
     layer_icon = pdk.Layer(
         "IconLayer",
         data=df_map,
@@ -433,7 +437,7 @@ def view_map():
         pickable=True,
     )
 
-    # Capa de labels "BIM X" y "ORIGEN"
+    # Capa de labels "BIM X" y "Matriz"
     df_map["title"] = df_map["label"].astype(str)
     layer_label = pdk.Layer(
         "TextLayer",
@@ -450,11 +454,10 @@ def view_map():
     # 2) Planificador de ruta por carretera (independiente del selector de BIM)
     st.subheader("🧭 Planificador de ruta por carretera (OpenRouteService)")
 
-    # IMPORTANTE:
-    # Dejamos que el usuario decida si ORIGEN entra o no a la ruta.
+    # Dejamos que el usuario decida si Matriz entra o no a la ruta.
     bims_disponibles = sorted(df_map["numero_bim"].unique().tolist())
     bims_sel = st.multiselect(
-        "Selecciona los BIMs que quieres incluir en la ruta (puedes incluir ORIGEN si quieres partir desde la casa matriz)",
+        "Selecciona los BIMs que quieres incluir en la ruta (puedes incluir Matriz si quieres partir desde la casa matriz)",
         options=bims_disponibles,
         key="bims_sel_ruta",
     )
@@ -474,7 +477,7 @@ def view_map():
         )
 
         if len(stops) < 2:
-            st.info("Se necesita al menos 2 puntos (por ejemplo ORIGEN + 1 BIM) para calcular una ruta.")
+            st.info("Se necesita al menos 2 puntos (por ejemplo Matriz + 1 BIM) para calcular una ruta.")
         else:
             # 1) Orden aproximado (heurística vecino más cercano) con haversine
             route_df = build_route_nearest_neighbor(stops)
@@ -514,9 +517,9 @@ def view_map():
           data=path_data,
           get_path="path",
           width_scale=0.4,              # escala general del ancho
-          width_min_pixels=8,         # grosor mínimo en píxeles (siempre visible)
-          get_width=30,               # grosor base (ajústalo libremente)
-          get_color=[0, 255, 0],      # verde brillante
+          width_min_pixels=8,           # grosor mínimo en píxeles (siempre visible)
+          get_width=30,                 # grosor base
+          get_color=[0, 255, 0],        # verde brillante
           pickable=False,
       )
         layers.append(layer_path)
@@ -529,14 +532,14 @@ def view_map():
     st.pydeck_chart(deck, use_container_width=True)
 
 # ==========================================================
-# Detalle del Bioreactor
+# Detalle del biorreactor
 # ==========================================================
 def view_detail():
     catalogo = get_biorreactores()
     bim = str(st.session_state.selected_bim) if st.session_state.selected_bim else None
 
     if not bim or bim not in set(catalogo["numero_bim"].astype("string")):
-        st.info("Bioreactor no encontrado. Regresando al panel general…")
+        st.info("Biorreactor no encontrado. Regresando al panel general…")
         go_home()
         st.stop()
 
@@ -544,7 +547,7 @@ def view_detail():
         '<a class="btn-link" href="?page=home" target="_self">⬅️ Volver al Panel General</a>',
         unsafe_allow_html=True,
     )
-    st.title(f"🧬 Detalle del Bioreactor {bim}")
+    st.title(f"🧬 Detalle del biorreactor {bim}")
 
     sel = catalogo[catalogo["numero_bim"].astype("string") == bim].iloc[0]
 
@@ -553,7 +556,7 @@ def view_detail():
         st.markdown(f"**Cliente:** {sel.get('cliente') or '—'}")
         st.markdown(f"**Microalga cultivada:** {sel.get('tipo_microalga') or '—'}")
         st.markdown(f"**Tipo de aireador:** {sel.get('tipo_aireador') or '—'}")
-        st.markdown(f"**Altura del bioreactor:** {sel.get('altura_bim') or '—'} m")
+        st.markdown(f"**Altura del biorreactor:** {sel.get('altura_bim') or '—'} m")
     with c2:
         luz = sel.get('uso_luz_artificial')
         st.markdown(f"**Luz artificial:** {'Sí' if bool(luz) else 'No' if luz is not None else '—'}")
@@ -565,7 +568,7 @@ def view_detail():
     d1 = datetime.combine(st.date_input("Desde", hoy - timedelta(days=30), key="d1_detail"), datetime.min.time())
     d2 = datetime.combine(st.date_input("Hasta", hoy, key="d2_detail"), datetime.max.time())
 
-    T1, T2, T3 = st.tabs(["Registros", "Diagnósticos", "Eventos del bioreactor"])
+    T1, T2, T3 = st.tabs(["Registros", "Diagnósticos", "Eventos del biorreactor"])
 
     with T1:
         df_r = get_registros(bim, d1, d2)
@@ -597,7 +600,7 @@ def view_detail():
         df_e = get_eventos(bim, d1, d2)
         st.metric("Total de eventos", len(df_e))
         if df_e.empty:
-            st.info("Sin eventos registrados para este bioreactor en el rango indicado.")
+            st.info("Sin eventos registrados para este biorreactor en el rango indicado.")
         else:
             st.dataframe(df_e, use_container_width=True)
             st.download_button(
@@ -617,4 +620,4 @@ elif page == "map":
 else:
     view_home()
 
-st.caption("© Technolab — Sistema de Gestión y Monitoreo de Bioreactores.")
+st.caption("© Technolab — Sistema de Gestión y Monitoreo de biorreactores.")
