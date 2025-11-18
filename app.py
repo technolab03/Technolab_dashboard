@@ -483,7 +483,7 @@ def view_map():
       "PathLayer",
       data=path_data,
       get_path="path",
-      width_scale=1,              # escala general del ancho
+      width_scale=0.5,              # escala general del ancho
       width_min_pixels=8,         # grosor mínimo en píxeles (siempre visible)
       get_width=35,               # grosor base (ajústalo libremente)
       get_color=[0, 255, 0],      # verde brillante
