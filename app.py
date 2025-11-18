@@ -482,13 +482,16 @@ def view_map():
 
         path_data = [{"path": clean_coords}]
         layer_path = pdk.Layer(
-            "PathLayer",
-            data=path_data,
-            get_path="path",
-            get_width=18,            # más gruesa que la original, pero razonable
-            get_color=[0, 255, 0],   # verde brillante
-            pickable=False,
-        )
+      "PathLayer",
+      data=path_data,
+      get_path="path",
+      width_scale=0.5,              # escala general del ancho
+      width_min_pixels=8,         # grosor mínimo en píxeles (siempre visible)
+      get_width=50,               # grosor base (ajústalo libremente)
+      get_color=[0, 255, 0],      # verde brillante
+      pickable=False,
+  )
+
         layers.append(layer_path)
 
     deck = pdk.Deck(
