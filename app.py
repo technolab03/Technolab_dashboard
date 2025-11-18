@@ -16,8 +16,8 @@ st.set_page_config(page_title="Technolab Data Center", page_icon="🧪", layout=
 # Casa Matriz Tecnolab — MATRIZ (punto 0)
 # ==========================================================
 # Coordenadas aproximadas para Apóstol Santiago 4198, La Serena
-ORIGIN_LAT = -29.9027
-ORIGIN_LON = -71.2520
+ORIGIN_LAT = -29.947648
+ORIGIN_LON = -71.248671
 
 # ==========================================================
 # Estilos
