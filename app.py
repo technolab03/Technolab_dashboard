@@ -127,7 +127,6 @@ def build_route_nearest_neighbor(df_points: pd.DataFrame) -> pd.DataFrame:
     remaining = df_points.copy().reset_index(drop=True)
     route_rows = []
 
-    # Partimos desde el primer punto
     current_idx = 0
     route_rows.append(remaining.loc[current_idx])
     remaining = remaining.drop(index=current_idx).reset_index(drop=True)
@@ -136,7 +135,6 @@ def build_route_nearest_neighbor(df_points: pd.DataFrame) -> pd.DataFrame:
         last_lat = route_rows[-1]["latitud"]
         last_lon = route_rows[-1]["longitud"]
 
-        # Encontrar el más cercano
         dists = remaining.apply(
             lambda r: haversine_km(last_lat, last_lon, r["latitud"], r["longitud"]),
             axis=1
@@ -180,9 +178,9 @@ def get_driving_route_ors(coords):
     try:
         feat = data["features"][0]
         summary = feat["properties"]["summary"]
-        distancia_km = summary["distance"] / 1000.0      # metros → km
-        duracion_h  = summary["duration"] / 3600.0       # segundos → horas
-        geometria   = feat["geometry"]["coordinates"]    # lista [lon, lat]
+        distancia_km = summary["distance"] / 1000.0
+        duracion_h  = summary["duration"] / 3600.0
+        geometria   = feat["geometry"]["coordinates"]
         return distancia_km, duracion_h, geometria
     except Exception as e:
         st.error(f"Respuesta inesperada de la API de rutas: {e}")
@@ -195,7 +193,6 @@ def get_driving_route_ors(coords):
 def get_clientes() -> pd.DataFrame:
     return q("SELECT id, usuario_id, usuario_nombre, cliente, BIMs_instalados FROM clientes")
 
-# ↓↓↓ biorreactores y mapa con TTL = 1s para ver cambios rápido ↓↓↓
 @st.cache_data(ttl=1)
 def get_biorreactores() -> pd.DataFrame:
     return q("""
@@ -224,15 +221,14 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     cat["longitud"] = cat["longitud"].map(_to_float_coord)
     cat = cat.dropna(subset=["latitud","longitud"])
 
-    # Iconos Twemoji
     tractor_icon_cfg = {
-        "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",  # 🚜
+        "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",
         "width": 72,
         "height": 72,
         "anchorY": 72,
     }
     matriz_icon_cfg = {
-        "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f3e0.png",  # 🏠 casa
+        "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f3e0.png",
         "width": 72,
         "height": 72,
         "anchorY": 72,
@@ -241,12 +237,10 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     if cat.empty:
         cat = pd.DataFrame(columns=["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon_data"])
 
-    # Campos normales de los BIMs de la base
     if not cat.empty:
         cat["label"] = "BIM " + cat["numero_bim"].astype("string")
         cat["icon_data"] = [tractor_icon_cfg] * len(cat)
 
-    # --- Agregar BIM sintético MATRIZ (Casa Matriz Technolab) ---
     matriz_row = {
         "cliente": "Casa Matriz Technolab",
         "numero_bim": "Matriz",
@@ -264,10 +258,7 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
 def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
     """
     Eventos del BIM desde la tabla fechas_BIMs.
-    BIM es único a nivel global. Se normaliza el formato del número de BIM
-    por si en la tabla está como '1', 'BIM1', 'BIM 1', etc.
-    El rango de fechas se puede usar más adelante si quieres, pero por ahora
-    el match principal es solo por BIM.
+    Se normaliza el número de BIM por si está como '1', 'BIM1', 'BIM 1', etc.
     """
     return q("""
         SELECT id, numero_bim, nombre_evento, fecha, comentarios
@@ -370,7 +361,6 @@ def view_home():
     k4.metric("Registros de datos", tr)
     k5.metric("Eventos asociados", te)
 
-    # --- Filtros laterales + acceso al mapa ---
     st.sidebar.title("Filtros de visualización")
     bio_df = get_biorreactores().copy()
     bio_df["cliente"] = bio_df["cliente"].astype("string")
@@ -383,7 +373,6 @@ def view_home():
     if st.sidebar.button("🌍 Abrir mapa de biorreactores"):
         go_map()
 
-    # --- Listado de biorreactores ---
     st.divider()
     st.subheader("📋 Listado de biorreactores")
 
@@ -405,7 +394,7 @@ def view_home():
                         go_detail(str(r["numero_bim"]))
 
 # ==========================================================
-# Página del mapa (ventana propia) + ruta óptima real por carretera
+# Página del mapa
 # ==========================================================
 def view_map():
     st.markdown(
@@ -414,8 +403,7 @@ def view_map():
     )
     st.title("🌍 Mapa de biorreactores")
 
-    # Usamos TODOS los BIMs (incluye MATRIZ sintética)
-    df_map = get_map_df()  # sin filtros
+    df_map = get_map_df()
     if df_map.empty:
         st.info("No existen coordenadas registradas para los biorreactores.")
         return
@@ -425,7 +413,6 @@ def view_map():
     df_map["cliente"] = df_map["cliente"].astype("string").str.strip()
     df_map["numero_bim"] = df_map["numero_bim"].astype("string")
 
-    # 1) Selector de UN BIM solo para centrar el mapa (incluye MATRIZ)
     bims_opts = sorted(df_map["numero_bim"].unique().tolist())
     bim_focus = st.selectbox(
         "Selecciona el BIM para centrar el mapa (incluye Matriz)",
@@ -445,7 +432,6 @@ def view_map():
     zoom = 12
     view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=zoom, pitch=0)
 
-    # Capa de iconos (biorreactores + Matriz 🏠)
     layer_icon = pdk.Layer(
         "IconLayer",
         data=df_map,
@@ -456,7 +442,6 @@ def view_map():
         pickable=True,
     )
 
-    # Capa de labels "BIM X" y "Matriz"
     df_map["title"] = df_map["label"].astype(str)
     layer_label = pdk.Layer(
         "TextLayer",
@@ -470,10 +455,8 @@ def view_map():
         get_pixel_offset=[18, 0],
     )
 
-    # 2) Planificador de ruta por carretera (independiente del selector de BIM)
     st.subheader("🧭 Planificador de ruta")
 
-    # Dejamos que el usuario decida si Matriz entra o no a la ruta.
     bims_disponibles = sorted(df_map["numero_bim"].unique().tolist())
     bims_sel = st.multiselect(
         "Selecciona los BIMs que quieres incluir en la ruta (puedes incluir Matriz si quieres partir desde la casa matriz)",
@@ -498,26 +481,21 @@ def view_map():
         if len(stops) < 2:
             st.info("Se necesita al menos 2 puntos (por ejemplo Matriz + 1 BIM) para calcular una ruta.")
         else:
-            # Si Matriz está incluida, siempre será el primer punto de la ruta
             if "Matriz" in stops["numero_bim"].values:
                 matriz_df = stops[stops["numero_bim"] == "Matriz"]
                 otros_df = stops[stops["numero_bim"] != "Matriz"]
                 stops = pd.concat([matriz_df, otros_df], ignore_index=True)
 
-            # 1) Orden aproximado (heurística vecino más cercano) con haversine
             route_df = build_route_nearest_neighbor(stops)
 
-            # 2) Coordenadas en el orden calculado para la API de rutas (lon, lat)
             coords = [
                 [float(row["longitud"]), float(row["latitud"])]
                 for _, row in route_df.iterrows()
             ]
 
-            # 3) Ruta real por carretera con ORS
             distancia_km, duracion_h, ruta_coords = get_driving_route_ors(coords)
 
             if distancia_km is not None and duracion_h is not None and ruta_coords:
-                # MÉTRICAS LADO A LADO
                 col1, col2 = st.columns(2)
                 with col1:
                     st.metric("Distancia total por carretera (km)", f"{distancia_km:,.1f}")
@@ -530,17 +508,16 @@ def view_map():
                     use_container_width=True,
                 )
 
-    # 3) Capas del mapa (iconos + etiquetas + ruta si existe)
     layers = [layer_icon, layer_label]
 
     if ruta_coords is not None:
-        # Aseguramos que todas las coords sean floats simples
         clean_coords = [
             [float(lon), float(lat)]
             for lon, lat in ruta_coords
         ]
 
         path_data = [{"path": clean_coords}]
+        import pydeck as pdk
         layer_path = pdk.Layer(
             "PathLayer",
             data=path_data,
@@ -627,11 +604,11 @@ def view_detail():
 
     with T3:
         df_e = get_eventos(bim, d1, d2)
-        st.metric("Total de eventos", len(df_e))
+        st.metric("Total de eventos históricos", len(df_e))
+
         if df_e.empty:
             st.info("Sin eventos registrados para este biorreactor en el rango indicado.")
 
-            # --- Vista de debug para ver qué hay en fechas_BIMs ---
             st.caption("Vista de debug de la tabla fechas_BIMs (primeras filas).")
             df_debug = q("""
                 SELECT id, numero_bim, nombre_evento, fecha, comentarios
@@ -644,9 +621,29 @@ def view_detail():
             else:
                 st.dataframe(df_debug, use_container_width=True)
         else:
+            # =======================
+            # Resumen: último evento por tipo
+            # =======================
+            # Ordenamos de más antiguo a más nuevo, dejamos el último por nombre_evento,
+            # y luego lo mostramos ordenado de más nuevo a más antiguo.
+            df_resumen = (
+                df_e.sort_values("fecha")  # de antiguo a nuevo
+                    .drop_duplicates(subset=["nombre_evento"], keep="last")
+                    .sort_values("fecha", ascending=False)
+                    .reset_index(drop=True)
+            )
+
+            st.subheader("🧾 Último evento registrado por tipo de evento")
+            st.dataframe(df_resumen, use_container_width=True)
+
+            # =======================
+            # Historial completo
+            # =======================
+            st.subheader("📚 Historial completo de eventos")
             st.dataframe(df_e, use_container_width=True)
+
             st.download_button(
-                "Descargar CSV",
+                "Descargar historial completo (CSV)",
                 df_e.to_csv(index=False).encode("utf-8"),
                 file_name=f"eventos_BIM{bim}.csv",
             )
@@ -663,4 +660,3 @@ else:
     view_home()
 
 st.caption("© Technolab — Sistema de Gestión y Monitoreo de biorreactores.")
-
