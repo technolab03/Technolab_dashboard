@@ -127,6 +127,7 @@ def build_route_nearest_neighbor(df_points: pd.DataFrame) -> pd.DataFrame:
     remaining = df_points.copy().reset_index(drop=True)
     route_rows = []
 
+    # Partimos desde el primer punto
     current_idx = 0
     route_rows.append(remaining.loc[current_idx])
     remaining = remaining.drop(index=current_idx).reset_index(drop=True)
@@ -178,9 +179,9 @@ def get_driving_route_ors(coords):
     try:
         feat = data["features"][0]
         summary = feat["properties"]["summary"]
-        distancia_km = summary["distance"] / 1000.0
-        duracion_h  = summary["duration"] / 3600.0
-        geometria   = feat["geometry"]["coordinates"]
+        distancia_km = summary["distance"] / 1000.0      # metros → km
+        duracion_h  = summary["duration"] / 3600.0       # segundos → horas
+        geometria   = feat["geometry"]["coordinates"]    # lista [lon, lat]
         return distancia_km, duracion_h, geometria
     except Exception as e:
         st.error(f"Respuesta inesperada de la API de rutas: {e}")
@@ -276,7 +277,7 @@ def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
                   ),
                   'bim', ''
               )
-        ORDER BY fecha DESC
+        ORDER BY fecha DESC, id DESC
     """, {"bim": str(bim)})
 
 @st.cache_data(ttl=180)
@@ -286,7 +287,7 @@ def get_diagnosticos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
         FROM diagnosticos d
         WHERE d.usuario_id IN (SELECT r.usuario_id FROM registros r WHERE r.BIM = :bim)
           AND d.fecha BETWEEN :d1 AND :d2
-        ORDER BY d.fecha DESC
+        ORDER BY d.fecha DESC, d.id DESC
     """, {"bim": str(bim), "d1": d1, "d2": d2})
 
 @st.cache_data(ttl=180)
@@ -295,7 +296,7 @@ def get_registros(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
         SELECT id, usuario_id, BIM, respuestaGPT, HEX, fecha
         FROM registros
         WHERE BIM = :bim AND fecha BETWEEN :d1 AND :d2
-        ORDER BY fecha DESC
+        ORDER BY fecha DESC, id DESC
     """, {"bim": str(bim), "d1": d1, "d2": d2})
 
 # ==========================================================
@@ -517,7 +518,6 @@ def view_map():
         ]
 
         path_data = [{"path": clean_coords}]
-        import pydeck as pdk
         layer_path = pdk.Layer(
             "PathLayer",
             data=path_data,
@@ -576,8 +576,11 @@ def view_detail():
 
     T1, T2, T3 = st.tabs(["Registros", "Diagnósticos", "Eventos del biorreactor"])
 
+    # -------- Registros --------
     with T1:
         df_r = get_registros(bim, d1, d2)
+        if not df_r.empty:
+            df_r = df_r.sort_values(["fecha", "id"], ascending=[False, False]).reset_index(drop=True)
         st.metric("Total de registros", len(df_r))
         if df_r.empty:
             st.info("Sin registros en el rango indicado.")
@@ -589,8 +592,11 @@ def view_detail():
                 file_name=f"registros_BIM{bim}.csv",
             )
 
+    # -------- Diagnósticos --------
     with T2:
         df_d = get_diagnosticos(bim, d1, d2)
+        if not df_d.empty:
+            df_d = df_d.sort_values(["fecha", "id"], ascending=[False, False]).reset_index(drop=True)
         st.metric("Total de diagnósticos", len(df_d))
         if df_d.empty:
             st.info("Sin diagnósticos en el rango indicado.")
@@ -602,8 +608,11 @@ def view_detail():
                 file_name=f"diagnosticos_BIM{bim}.csv",
             )
 
+    # -------- Eventos --------
     with T3:
         df_e = get_eventos(bim, d1, d2)
+        if not df_e.empty:
+            df_e = df_e.sort_values(["fecha", "id"], ascending=[False, False]).reset_index(drop=True)
         st.metric("Total de eventos históricos", len(df_e))
 
         if df_e.empty:
@@ -613,7 +622,7 @@ def view_detail():
             df_debug = q("""
                 SELECT id, numero_bim, nombre_evento, fecha, comentarios
                 FROM fechas_BIMs
-                ORDER BY fecha DESC
+                ORDER BY fecha DESC, id DESC
                 LIMIT 50
             """)
             if df_debug.empty:
@@ -621,24 +630,18 @@ def view_detail():
             else:
                 st.dataframe(df_debug, use_container_width=True)
         else:
-            # =======================
             # Resumen: último evento por tipo
-            # =======================
-            # Ordenamos de más antiguo a más nuevo, dejamos el último por nombre_evento,
-            # y luego lo mostramos ordenado de más nuevo a más antiguo.
             df_resumen = (
-                df_e.sort_values("fecha")  # de antiguo a nuevo
+                df_e.sort_values(["fecha", "id"])      # antiguo -> nuevo
                     .drop_duplicates(subset=["nombre_evento"], keep="last")
-                    .sort_values("fecha", ascending=False)
+                    .sort_values(["fecha", "id"], ascending=[False, False])  # nuevo -> antiguo
                     .reset_index(drop=True)
             )
 
             st.subheader("🧾 Último evento registrado por tipo de evento")
             st.dataframe(df_resumen, use_container_width=True)
 
-            # =======================
             # Historial completo
-            # =======================
             st.subheader("📚 Historial completo de eventos")
             st.dataframe(df_e, use_container_width=True)
 
