@@ -87,7 +87,7 @@ def q(sql: str, params: dict | None = None) -> pd.DataFrame:
 def _norm_bim_series(s: pd.Series) -> pd.Series:
     x = s.astype("string").fillna("").str.strip()
     x = x.str.replace(r"^\s*bim\s*", "", regex=True)
-    x = x.str.lower().replace({"none":"", "null":"", "ninguno":""})
+    x = x.str.lower().replace({"none": "", "null": "", "ninguno": ""})
     return x
 
 _coord_pattern = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
@@ -262,12 +262,17 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
 
 @st.cache_data(ttl=180)
 def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
+    """
+    Eventos del BIM desde la tabla fechas_BIMs.
+    BIM es único a nivel global, por lo que aquí solo se filtra por el número de BIM,
+    sin depender de clientes, registros ni diagnósticos, y sin limitar por fecha.
+    """
     return q("""
         SELECT id, numero_bim, nombre_evento, fecha, comentarios
         FROM fechas_BIMs
-        WHERE numero_bim = :bim AND fecha BETWEEN :d1 AND :d2
+        WHERE TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) = TRIM(:bim)
         ORDER BY fecha DESC
-    """, {"bim": str(bim), "d1": d1, "d2": d2})
+    """, {"bim": str(bim)})
 
 @st.cache_data(ttl=180)
 def get_diagnosticos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
@@ -610,7 +615,7 @@ def view_detail():
         df_e = get_eventos(bim, d1, d2)
         st.metric("Total de eventos", len(df_e))
         if df_e.empty:
-            st.info("Sin eventos registrados para este biorreactor en el rango indicado.")
+            st.info("Sin eventos registrados para este biorreactor.")
         else:
             st.dataframe(df_e, use_container_width=True)
             st.download_button(
