@@ -87,7 +87,7 @@ def q(sql: str, params: dict | None = None) -> pd.DataFrame:
 def _norm_bim_series(s: pd.Series) -> pd.Series:
     x = s.astype("string").fillna("").str.strip()
     x = x.str.replace(r"^\s*bim\s*", "", regex=True)
-    x = x.str.lower().replace({"none": "", "null": "", "ninguno": ""})
+    x = x.str.lower().replace({"none":"", "null":"", "ninguno":""})
     return x
 
 _coord_pattern = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
@@ -127,7 +127,7 @@ def build_route_nearest_neighbor(df_points: pd.DataFrame) -> pd.DataFrame:
     remaining = df_points.copy().reset_index(drop=True)
     route_rows = []
 
-    # Partimos desde el primer punto (puedes cambiar la lógica de partida si quieres)
+    # Partimos desde el primer punto
     current_idx = 0
     route_rows.append(remaining.loc[current_idx])
     remaining = remaining.drop(index=current_idx).reset_index(drop=True)
@@ -264,13 +264,27 @@ def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
 def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
     """
     Eventos del BIM desde la tabla fechas_BIMs.
-    BIM es único a nivel global, por lo que aquí solo se filtra por el número de BIM,
-    sin depender de clientes, registros ni diagnósticos, y sin limitar por fecha.
+    BIM es único a nivel global. Se normaliza el formato del número de BIM
+    por si en la tabla está como '1', 'BIM1', 'BIM 1', etc.
+    El rango de fechas se puede usar más adelante si quieres, pero por ahora
+    el match principal es solo por BIM.
     """
     return q("""
         SELECT id, numero_bim, nombre_evento, fecha, comentarios
         FROM fechas_BIMs
-        WHERE TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4)) = TRIM(:bim)
+        WHERE REPLACE(
+                  REPLACE(
+                      LOWER(TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4))),
+                      'bim ', ''
+                  ),
+                  'bim', ''
+              ) = REPLACE(
+                  REPLACE(
+                      LOWER(TRIM(:bim)),
+                      'bim ', ''
+                  ),
+                  'bim', ''
+              )
         ORDER BY fecha DESC
     """, {"bim": str(bim)})
 
@@ -531,10 +545,10 @@ def view_map():
             "PathLayer",
             data=path_data,
             get_path="path",
-            width_scale=0.4,              # escala general del ancho
-            width_min_pixels=8,           # grosor mínimo en píxeles (siempre visible)
-            get_width=30,                 # grosor base
-            get_color=[0, 255, 0],        # verde brillante
+            width_scale=0.4,
+            width_min_pixels=8,
+            get_width=30,
+            get_color=[0, 255, 0],
             pickable=False,
         )
         layers.append(layer_path)
@@ -615,7 +629,20 @@ def view_detail():
         df_e = get_eventos(bim, d1, d2)
         st.metric("Total de eventos", len(df_e))
         if df_e.empty:
-            st.info("Sin eventos registrados para este biorreactor.")
+            st.info("Sin eventos registrados para este biorreactor en el rango indicado.")
+
+            # --- Vista de debug para ver qué hay en fechas_BIMs ---
+            st.caption("Vista de debug de la tabla fechas_BIMs (primeras filas).")
+            df_debug = q("""
+                SELECT id, numero_bim, nombre_evento, fecha, comentarios
+                FROM fechas_BIMs
+                ORDER BY fecha DESC
+                LIMIT 50
+            """)
+            if df_debug.empty:
+                st.write("La tabla fechas_BIMs está vacía o no devolvió filas.")
+            else:
+                st.dataframe(df_debug, use_container_width=True)
         else:
             st.dataframe(df_e, use_container_width=True)
             st.download_button(
@@ -636,3 +663,4 @@ else:
     view_home()
 
 st.caption("© Technolab — Sistema de Gestión y Monitoreo de biorreactores.")
+
