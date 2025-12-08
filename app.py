@@ -140,24 +140,28 @@ def build_route_nearest_neighbor(df_points: pd.DataFrame) -> pd.DataFrame:
 
     route_df = pd.DataFrame(route_rows).reset_index(drop=True)
     return route_df
-
 def get_driving_route_ors(coords):
     if "ors" not in st.secrets or "api_key" not in st.secrets["ors"]:
-        st.error("Falta configurar st.secrets['ors']['api_key']")
+        st.error("Falta configurar st.secrets['ors']['api_key'] con tu API Key de OpenRouteService.")
         return None, None, None
 
     api_key = st.secrets["ors"]["api_key"]
     url = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
 
-    headers = {"Authorization": api_key, "Content-Type": "application/json"}
-    body = {"coordinates": coords}
+    headers = {
+        "Authorization": api_key,
+        "Content-Type": "application/json",
+    }
+    body = {
+        "coordinates": coords,
+    }
 
     try:
         resp = requests.post(url, json=body, headers=headers, timeout=20)
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        st.error(f"Error ORS: {e}")
+        st.error(f"Error al llamar a la API de rutas: {e}")
         return None, None, None
 
     try:
@@ -168,18 +172,18 @@ def get_driving_route_ors(coords):
         geometria   = feat["geometry"]["coordinates"]
         return distancia_km, duracion_h, geometria
     except Exception as e:
-        st.error(f"Respuesta ORS inesperada: {e}")
+        st.error(f"Respuesta inesperada de la API de rutas: {e}")
         return None, None, None
 
 # ==========================================================
 # Consultas con caché
 # ==========================================================
 @st.cache_data(ttl=180)
-def get_clientes():
+def get_clientes() -> pd.DataFrame:
     return q("SELECT id, usuario_id, usuario_nombre, cliente, BIMs_instalados FROM clientes")
 
 @st.cache_data(ttl=1)
-def get_biorreactores():
+def get_biorreactores() -> pd.DataFrame:
     return q("""
         SELECT
            id,
@@ -193,7 +197,7 @@ def get_biorreactores():
     """)
 
 @st.cache_data(ttl=1)
-def get_map_df(cliente_sel=None):
+def get_map_df(cliente_sel: str | None = None) -> pd.DataFrame:
     cat = get_biorreactores().copy()
     if cliente_sel and cliente_sel != "Todos":
         cat = cat[cat["cliente"].fillna("").str.strip() == cliente_sel]
@@ -204,12 +208,19 @@ def get_map_df(cliente_sel=None):
 
     tractor_icon_cfg = {
         "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f69c.png",
-        "width": 72, "height": 72, "anchorY": 72,
+        "width": 72,
+        "height": 72,
+        "anchorY": 72,
     }
     matriz_icon_cfg = {
         "url": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f3e0.png",
-        "width": 72, "height": 72, "anchorY": 72,
+        "width": 72,
+        "height": 72,
+        "anchorY": 72,
     }
+
+    if cat.empty:
+        cat = pd.DataFrame(columns=["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon_data"])
 
     if not cat.empty:
         cat["label"] = "BIM " + cat["numero_bim"].astype("string")
@@ -229,17 +240,28 @@ def get_map_df(cliente_sel=None):
     return cat[["cliente","numero_bim","latitud","longitud","tipo_microalga","label","icon_data"]]
 
 @st.cache_data(ttl=180)
-def get_eventos(bim, d1, d2):
+def get_eventos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
     return q("""
         SELECT id, numero_bim, nombre_evento, fecha, comentarios
         FROM fechas_BIMs
-        WHERE REPLACE(REPLACE(LOWER(TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4))), 'bim ', ''),'bim','')
-            = REPLACE(REPLACE(LOWER(TRIM(:bim)), 'bim ', ''),'bim','')
+        WHERE REPLACE(
+                  REPLACE(
+                      LOWER(TRIM(CAST(numero_bim AS CHAR CHARACTER SET utf8mb4))),
+                      'bim ', ''
+                  ),
+                  'bim', ''
+              ) = REPLACE(
+                  REPLACE(
+                      LOWER(TRIM(:bim)),
+                      'bim ', ''
+                  ),
+                  'bim', ''
+              )
         ORDER BY fecha DESC, id DESC
     """, {"bim": str(bim)})
 
 @st.cache_data(ttl=180)
-def get_diagnosticos(bim, d1, d2):
+def get_diagnosticos(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
     return q("""
         SELECT d.id, d.usuario_id, d.PreguntaCliente, d.respuestaGPT, d.fecha
         FROM diagnosticos d
@@ -249,7 +271,7 @@ def get_diagnosticos(bim, d1, d2):
     """, {"bim": str(bim), "d1": d1, "d2": d2})
 
 @st.cache_data(ttl=180)
-def get_registros(bim, d1, d2):
+def get_registros(bim: str, d1: datetime, d2: datetime) -> pd.DataFrame:
     return q("""
         SELECT id, usuario_id, BIM, respuestaGPT, HEX, fecha
         FROM registros
@@ -265,8 +287,8 @@ def get_kpis():
     c = q("SELECT COUNT(*) AS c FROM clientes")
     total_clientes = int(c["c"].iloc[0]) if not c.empty else 0
 
-    s = q("SELECT SUM(COALESCE(BIMs_instalados,0)) AS s FROM clientes")
-    sum_clientes = int(s["s"].iloc[0]) if not s.empty else 0
+    sum_cli_df = q("SELECT SUM(COALESCE(BIMs_instalados,0)) AS s FROM clientes")
+    sum_clientes = int(sum_cli_df["s"].iloc[0]) if not sum_cli_df.empty else 0
 
     df_bio = q("SELECT numero_bim FROM biorreactores WHERE numero_bim IS NOT NULL")
     distinct_bims = int(df_bio["numero_bim"].drop_duplicates().shape[0]) if not df_bio.empty else 0
@@ -274,10 +296,8 @@ def get_kpis():
 
     d = q("SELECT COUNT(*) AS c FROM diagnosticos")
     total_diag = int(d["c"].iloc[0]) if not d.empty else 0
-
     r = q("SELECT COUNT(*) AS c FROM registros")
     total_regs = int(r["c"].iloc[0]) if not r.empty else 0
-
     e = q("SELECT COUNT(*) AS c FROM fechas_BIMs")
     total_eventos = int(e["c"].iloc[0]) if not e.empty else 0
 
@@ -292,7 +312,7 @@ def go_home():
     st.query_params.clear()
     st.query_params["page"] = "home"
 
-def go_detail(bim):
+def go_detail(bim: str):
     st.session_state.page = "detail"
     st.session_state.selected_bim = str(bim)
     st.query_params.clear()
@@ -341,30 +361,31 @@ def view_home():
         bio_df = bio_df[bio_df["cliente"].fillna("").str.strip() == cliente_sel]
 
     if bio_df.empty:
-        st.warning("No se encontraron biorreactores.")
+        st.warning("No se encontraron biorreactores para el filtro aplicado.")
     else:
         for cliente, grp in bio_df.groupby(bio_df["cliente"].fillna("").str.strip(), dropna=False):
             if cliente:
                 st.markdown(f"### 👤 {cliente}")
+
             cols = st.columns(3)
             for i, (_, r) in enumerate(grp.iterrows()):
                 with cols[i % 3]:
-                    if st.button(f"🌿 BIM {r['numero_bim']}", key=f"btn_{cliente}_{r['numero_bim']}"):
+                    label_btn = f"🌿 BIM {r['numero_bim']}"
+                    if st.button(label_btn, key=f"btn_bim_{cliente or 'sin_cliente'}_{r['numero_bim']}"):
                         go_detail(str(r["numero_bim"]))
-
 # ==========================================================
 # Página del mapa
 # ==========================================================
 def view_map():
     st.markdown(
-        '<a class="btn-link" href="?page=home" target="_self">⬅️ Volver</a>',
+        '<a class="btn-link" href="?page=home" target="_self">⬅️ Volver al Panel General</a>',
         unsafe_allow_html=True,
     )
     st.title("🌍 Mapa de biorreactores")
 
     df_map = get_map_df()
     if df_map.empty:
-        st.info("No hay coordenadas.")
+        st.info("No existen coordenadas registradas para los biorreactores.")
         return
 
     import pydeck as pdk
@@ -374,7 +395,7 @@ def view_map():
 
     bims_opts = sorted(df_map["numero_bim"].unique().tolist())
     bim_focus = st.selectbox(
-        "Selecciona BIM",
+        "Selecciona el BIM para centrar el mapa (incluye Matriz)",
         options=bims_opts,
         key="bim_focus_map",
     )
@@ -384,12 +405,12 @@ def view_map():
         lat0 = float(df_map["latitud"].mean())
         lon0 = float(df_map["longitud"].mean())
     else:
-        f = focus_rows.iloc[0]
-        lat0 = float(f["latitud"])
-        lon0 = float(f["longitud"])
+        focus_row = focus_rows.iloc[0]
+        lat0 = float(focus_row["latitud"])
+        lon0 = float(focus_row["longitud"])
 
     zoom = 12
-    view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=zoom)
+    view = pdk.ViewState(latitude=lat0, longitude=lon0, zoom=zoom, pitch=0)
 
     layer_icon = pdk.Layer(
         "IconLayer",
@@ -414,7 +435,79 @@ def view_map():
         get_pixel_offset=[18, 0],
     )
 
+    st.subheader("🧭 Planificador de ruta")
+
+    bims_disponibles = sorted(df_map["numero_bim"].unique().tolist())
+    bims_sel = st.multiselect(
+        "Selecciona los BIMs que quieres incluir en la ruta (puedes incluir Matriz si quieres partir desde la casa matriz)",
+        options=bims_disponibles,
+        key="bims_sel_ruta",
+    )
+
+    calcular_ruta = st.button("Calcular ruta óptima aproximada")
+
+    route_df = None
+    ruta_coords = None
+    distancia_km = None
+    duracion_h = None
+
+    if calcular_ruta:
+        stops = (
+            df_map[df_map["numero_bim"].isin(bims_sel)][["cliente", "numero_bim", "latitud", "longitud"]]
+            .drop_duplicates()
+            .reset_index(drop=True)
+        )
+
+        if len(stops) < 2:
+            st.info("Se necesita al menos 2 puntos (por ejemplo Matriz + 1 BIM) para calcular una ruta.")
+        else:
+            if "Matriz" in stops["numero_bim"].values:
+                matriz_df = stops[stops["numero_bim"] == "Matriz"]
+                otros_df = stops[stops["numero_bim"] != "Matriz"]
+                stops = pd.concat([matriz_df, otros_df], ignore_index=True)
+
+            route_df = build_route_nearest_neighbor(stops)
+
+            coords = [
+                [float(row["longitud"]), float(row["latitud"])]
+                for _, row in route_df.iterrows()
+            ]
+
+            distancia_km, duracion_h, ruta_coords = get_driving_route_ors(coords)
+
+            if distancia_km is not None and duracion_h is not None and ruta_coords:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Distancia total por carretera (km)", f"{distancia_km:,.1f}")
+                with col2:
+                    st.metric("Tiempo total estimado (horas)", f"{duracion_h:,.2f}")
+
+                st.markdown("**Orden sugerido de visita (después de optimización aproximada):**")
+                st.dataframe(
+                    route_df[["cliente", "numero_bim", "latitud", "longitud"]],
+                    use_container_width=True,
+                )
+
     layers = [layer_icon, layer_label]
+
+    if ruta_coords is not None:
+        clean_coords = [
+            [float(lon), float(lat)]
+            for lon, lat in ruta_coords
+        ]
+
+        path_data = [{"path": clean_coords}]
+        layer_path = pdk.Layer(
+            "PathLayer",
+            data=path_data,
+            get_path="path",
+            width_scale=0.4,
+            width_min_pixels=8,
+            get_width=30,
+            get_color=[0, 255, 0],
+            pickable=False,
+        )
+        layers.append(layer_path)
 
     deck = pdk.Deck(
         layers=layers,
@@ -428,85 +521,135 @@ def view_map():
 # ==========================================================
 def view_detail():
     catalogo = get_biorreactores()
-    bim = str(st.session_state.selected_bim)
+    bim = str(st.session_state.selected_bim) if st.session_state.selected_bim else None
+
+    if not bim or bim not in set(catalogo["numero_bim"].astype("string")):
+        st.info("Biorreactor no encontrado. Regresando al panel general…")
+        go_home()
+        st.stop()
+
+    st.markdown(
+        '<a class="btn-link" href="?page=home" target="_self">⬅️ Volver al Panel General</a>',
+        unsafe_allow_html=True,
+    )
+    st.title(f"🧬 Detalle del biorreactor {bim}")
 
     sel = catalogo[catalogo["numero_bim"].astype("string") == bim].iloc[0]
 
-    st.markdown(
-        '<a class="btn-link" href="?page=home" target="_self">⬅️ Volver</a>',
-        unsafe_allow_html=True,
-    )
-    st.title(f"🧬 Detalle BIM {bim}")
-
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown(f"**Cliente:** {sel.get('cliente')}")
-        st.markdown(f"**Microalga:** {sel.get('tipo_microalga')}")
-        st.markdown(f"**Aireador:** {sel.get('tipo_aireador')}")
-        st.markdown(f"**Altura:** {sel.get('altura_bim')} m")
+        st.markdown(f"**Cliente:** {sel.get('cliente') or '—'}")
+        st.markdown(f"**Microalga cultivada:** {sel.get('tipo_microalga') or '—'}")
+        st.markdown(f"**Tipo de aireador:** {sel.get('tipo_aireador') or '—'}")
+        st.markdown(f"**Altura del biorreactor:** {sel.get('altura_bim') or '—'} m")
     with c2:
         luz = sel.get('uso_luz_artificial')
-        st.markdown(f"**Luz artificial:** {'Sí' if bool(luz) else 'No'}")
-        st.markdown(f"**Instalación:** {sel.get('fecha_instalacion')}")
-        st.markdown(f"**Coords:** ({sel.get('latitud')}, {sel.get('longitud')})")
+        st.markdown(f"**Luz artificial:** {'Sí' if bool(luz) else 'No' if luz is not None else '—'}")
+        st.markdown(f"**Fecha de instalación:** {sel.get('fecha_instalacion') or '—'}")
+        st.markdown(f"**Coordenadas:** ({sel.get('latitud') or '—'}, {sel.get('longitud') or '—'})")
 
     st.divider()
-
     hoy = datetime.utcnow().date()
-    d1 = datetime.combine(st.date_input("Desde", hoy - timedelta(days=30)), datetime.min.time())
-    d2 = datetime.combine(st.date_input("Hasta", hoy), datetime.max.time())
+    d1 = datetime.combine(st.date_input("Desde", hoy - timedelta(days=30), key="d1_detail"), datetime.min.time())
+    d2 = datetime.combine(st.date_input("Hasta", hoy, key="d2_detail"), datetime.max.time())
 
-    T1, T2, T3 = st.tabs(["Registros", "Diagnósticos", "Eventos"])
+    T1, T2, T3 = st.tabs(["Registros", "Diagnósticos", "Eventos del biorreactor"])
 
     # -------- Registros --------
     with T1:
         df_r = get_registros(bim, d1, d2)
+
         if not df_r.empty:
             df_r = df_r.sort_values(["fecha", "id"], ascending=[False, False]).reset_index(drop=True)
-            df_r = df_r.drop(columns=["id"], errors="ignore")  # REMOVE ID
-        st.metric("Total registros", len(df_r))
+            df_r = df_r.drop(df_r.columns[0], axis=1, errors="ignore")  # OCULTAR 1° COLUMNA
+
+        st.metric("Total de registros", len(df_r))
         if df_r.empty:
-            st.info("Sin registros.")
+            st.info("Sin registros en el rango indicado.")
         else:
             st.dataframe(df_r, use_container_width=True)
+            st.download_button(
+                "Descargar CSV",
+                df_r.to_csv(index=False).encode("utf-8"),
+                file_name=f"registros_BIM{bim}.csv",
+            )
 
     # -------- Diagnósticos --------
     with T2:
         df_d = get_diagnosticos(bim, d1, d2)
+
         if not df_d.empty:
             df_d = df_d.sort_values(["fecha", "id"], ascending=[False, False]).reset_index(drop=True)
-            df_d = df_d.drop(columns=["id"], errors="ignore")  # REMOVE ID
-        st.metric("Total diagnósticos", len(df_d))
+            df_d = df_d.drop(df_d.columns[0], axis=1, errors="ignore")  # OCULTAR 1° COLUMNA
+
+        st.metric("Total de diagnósticos", len(df_d))
         if df_d.empty:
-            st.info("Sin diagnósticos.")
+            st.info("Sin diagnósticos en el rango indicado.")
         else:
             st.dataframe(df_d, use_container_width=True)
-
+            st.download_button(
+                "Descargar CSV",
+                df_d.to_csv(index=False).encode("utf-8"),
+                file_name=f"diagnosticos_BIM{bim}.csv",
+            )
     # -------- Eventos --------
     with T3:
         df_e = get_eventos(bim, d1, d2)
+
         if not df_e.empty:
             df_e = df_e.sort_values(["fecha", "id"], ascending=[False, False]).reset_index(drop=True)
 
-        st.metric("Total eventos", len(df_e))
+            # 🔥 OCULTAR 3 COLUMNAS SOLICITADAS
+            cols_to_drop = []
+            # primera columna
+            cols_to_drop.append(df_e.columns[0])
+            # columna id si existe
+            if "id" in df_e.columns:
+                cols_to_drop.append("id")
+            # columna numero_bim si existe
+            if "numero_bim" in df_e.columns:
+                cols_to_drop.append("numero_bim")
+
+            df_e = df_e.drop(columns=cols_to_drop, errors="ignore")
+
+        st.metric("Total de eventos históricos", len(df_e))
 
         if df_e.empty:
-            st.info("Sin eventos.")
+            st.info("Sin eventos registrados para este biorreactor en el rango indicado.")
+
+            st.caption("Vista de debug de la tabla fechas_BIMs (primeras filas).")
+            df_debug = q("""
+                SELECT id, numero_bim, nombre_evento, fecha, comentarios
+                FROM fechas_BIMs
+                ORDER BY fecha DESC, id DESC
+                LIMIT 50
+            """)
+            if df_debug.empty:
+                st.write("La tabla fechas_BIMs está vacía o no devolvió filas.")
+            else:
+                st.dataframe(df_debug, use_container_width=True)
+
         else:
+            # Resumen: último evento por tipo
             df_resumen = (
-                df_e.sort_values(["fecha", "id"])
+                df_e.sort_values(["fecha"], ascending=True)
                     .drop_duplicates(subset=["nombre_evento"], keep="last")
-                    .sort_values(["fecha", "id"], ascending=[False, False])
+                    .sort_values(["fecha"], ascending=False)
                     .reset_index(drop=True)
             )
-            df_resumen = df_resumen.drop(columns=["id", "numero_bim"], errors="ignore")  # REMOVE
-            df_e = df_e.drop(columns=["id", "numero_bim"], errors="ignore")  # REMOVE
 
-            st.subheader("🧾 Último evento por tipo")
+            st.subheader("🧾 Último evento registrado por tipo de evento")
             st.dataframe(df_resumen, use_container_width=True)
 
-            st.subheader("📚 Historial")
+            # Historial completo
+            st.subheader("📚 Historial completo de eventos")
             st.dataframe(df_e, use_container_width=True)
+
+            st.download_button(
+                "Descargar historial completo (CSV)",
+                df_e.to_csv(index=False).encode("utf-8"),
+                file_name=f"eventos_BIM{bim}.csv",
+            )
 
 # ==========================================================
 # Routing
